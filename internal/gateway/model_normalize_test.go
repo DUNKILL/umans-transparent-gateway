@@ -52,7 +52,7 @@ func TestNormalizeRequestJSONConvertsTupleItemsSchema(t *testing.T) {
 	      }
 	    }
 	  }]
-	}`))
+	}`), true)
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatal(err)
@@ -81,7 +81,7 @@ func TestNormalizeRequestJSONConvertsTupleItemsSchema(t *testing.T) {
 }
 
 func TestNormalizeRequestJSONAllowsAdditionalTupleItemsByDefault(t *testing.T) {
-	body := normalizeRequestJSON([]byte(`{"tools":[{"function":{"parameters":{"type":"object","properties":{"pair":{"type":"array","items":[{"type":"number"},{"type":"number"}]}}}}}]}`))
+	body := normalizeRequestJSON([]byte(`{"tools":[{"function":{"parameters":{"type":"object","properties":{"pair":{"type":"array","items":[{"type":"number"},{"type":"number"}]}}}}}]}`), true)
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatal(err)
@@ -97,5 +97,27 @@ func TestNormalizeRequestJSONAllowsAdditionalTupleItemsByDefault(t *testing.T) {
 	}
 	if prefixItems := pair["prefixItems"].([]any); len(prefixItems) != 2 {
 		t.Fatalf("prefixItems=%#v", prefixItems)
+	}
+}
+
+func TestNormalizeRequestJSONCanDisableSchemaCompat(t *testing.T) {
+	body := normalizeRequestJSON([]byte(`{"model":"umans-glm-5.2[1m]","tools":[{"input_schema":{"type":"object","properties":{"pair":{"type":"array","items":[{"type":"number"},{"type":"number"}]}}}}]}`), false)
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if got := payload["model"]; got != "umans-glm-5.2" {
+		t.Fatalf("model=%v", got)
+	}
+	tools := payload["tools"].([]any)
+	tool := tools[0].(map[string]any)
+	schema := tool["input_schema"].(map[string]any)
+	props := schema["properties"].(map[string]any)
+	pair := props["pair"].(map[string]any)
+	if _, ok := pair["items"].([]any); !ok {
+		t.Fatalf("items should stay as tuple array when schema compat is disabled: %#v", pair["items"])
+	}
+	if _, exists := pair["prefixItems"]; exists {
+		t.Fatalf("prefixItems should not be added when schema compat is disabled")
 	}
 }

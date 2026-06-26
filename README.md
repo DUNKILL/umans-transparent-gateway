@@ -11,6 +11,14 @@ It lets you point Claude Code, OpenAI SDK clients, ccswitch, or other tools at a
 
 > Copyright ©️生🐟
 
+## Responsible Use
+
+This project is only a convenience gateway for self-hosted API compatibility. It does not distribute, resell, bypass, or expand any upstream service entitlement. Use it with your own valid API key, respect upstream terms and rate/concurrency limits, and do not use it for abuse, credential sharing, spam, scraping, or policy evasion.
+
+## 使用边界
+
+本项目只是为了方便自托管中转和 API 兼容接入，不提供分发、转售、绕过或扩展任何上游服务权益的能力。请使用你自己的合法 API key，遵守上游条款、速率限制和并发限制，不要用于滥用、共享凭据、垃圾请求、批量抓取或规避策略。
+
 ## Recommended Upstream
 
 [Try Umans Code with my referral link](https://app.umans.ai/register?ref=CWM9Z5KJ). Umans Code is a hosted open-model coding endpoint for tools such as Claude Code, OpenCode, Cursor, Zed, and Pi. Their public pages currently describe hosted GLM 5.2 and Kimi K2.7-Code plans; in practice, the GLM/Kimi routes are fast and work well for coding agents. GLM is text-first here, but the 400k-class context experience is still excellent for large coding sessions.
@@ -51,6 +59,7 @@ The Umans CLI is useful, but some users do not want to run external installer or
 - **Per-key concurrency queue**: default 4 active requests per API key
 - **Transient upstream retry**: default 2 retries for temporary unavailable, `429`, `5xx`, `502`, `503`, `504`, and `529`
 - **Claude Code model suffix cleanup**: `umans-glm-5.2[1m]` is forwarded as `umans-glm-5.2`
+- **JSON Schema compatibility**: optional old tuple-style `items: [...]` cleanup for strict upstream validators
 
 ### Quick Start
 
@@ -102,6 +111,7 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 | `UMANS_UPSTREAM_RETRY_MAX` | `2` | Retry count after the first upstream attempt |
 | `UMANS_UPSTREAM_RETRY_BASE_DELAY` | `2s` | Initial retry delay |
 | `UMANS_UPSTREAM_RETRY_MAX_DELAY` | `5s` | Maximum retry delay |
+| `UMANS_SCHEMA_COMPAT` | `true` | Convert old tuple-style JSON Schema `items: [...]` into `prefixItems` for strict validators |
 | `UMANS_CATALOG_TTL` | `10m` | Model catalog cache TTL |
 
 ### Claude Code / ccswitch
@@ -200,6 +210,7 @@ Umans CLI 本身能用，但如果你不想在主力机器上运行外部 instal
 - **按 key 并发队列**：默认每个 API key 同时 4 个请求
 - **上游瞬断自动重试**：默认对临时不可用、`429`、`5xx`、`502`、`503`、`504`、`529` 重试 2 次
 - **Claude Code 模型后缀清洗**：`umans-glm-5.2[1m]` 会按 `umans-glm-5.2` 转发
+- **JSON Schema 兼容清洗**：可选地把旧 tuple 写法 `items: [...]` 转成严格校验器接受的 `prefixItems`
 
 ### 快速开始
 
@@ -251,6 +262,7 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 | `UMANS_UPSTREAM_RETRY_MAX` | `2` | 首次上游请求失败后的重试次数 |
 | `UMANS_UPSTREAM_RETRY_BASE_DELAY` | `2s` | 初始重试等待时间 |
 | `UMANS_UPSTREAM_RETRY_MAX_DELAY` | `5s` | 最大重试等待时间 |
+| `UMANS_SCHEMA_COMPAT` | `true` | 将旧 tuple-style JSON Schema `items: [...]` 转成严格校验器接受的 `prefixItems` |
 | `UMANS_CATALOG_TTL` | `10m` | 模型目录缓存时间 |
 
 ### Claude Code / ccswitch

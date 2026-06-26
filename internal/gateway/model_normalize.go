@@ -17,10 +17,10 @@ func normalizeModelName(model string) string {
 }
 
 func normalizeModelInJSON(body []byte) []byte {
-	return normalizeRequestJSON(body)
+	return normalizeRequestJSON(body, true)
 }
 
-func normalizeRequestJSON(body []byte) []byte {
+func normalizeRequestJSON(body []byte, schemaCompat bool) []byte {
 	if len(body) == 0 {
 		return body
 	}
@@ -28,7 +28,10 @@ func normalizeRequestJSON(body []byte) []byte {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return body
 	}
-	changed := normalizeJSONSchemaDraft(&payload)
+	changed := false
+	if schemaCompat {
+		changed = normalizeJSONSchemaDraft(&payload)
+	}
 	model, ok := payload["model"].(string)
 	if ok {
 		normalized := normalizeModelName(model)

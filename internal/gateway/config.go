@@ -37,6 +37,7 @@ type Config struct {
 	UpstreamRetryMax  int
 	UpstreamRetryBase time.Duration
 	UpstreamRetryCap  time.Duration
+	SchemaCompat      bool
 	CatalogTTL        time.Duration
 	SearchMode        SearchMode
 	BudgetPolicy      BudgetPolicy
@@ -58,6 +59,7 @@ func DefaultConfig() Config {
 		UpstreamRetryMax:  2,
 		UpstreamRetryBase: 2 * time.Second,
 		UpstreamRetryCap:  5 * time.Second,
+		SchemaCompat:      true,
 		CatalogTTL:        10 * time.Minute,
 		SearchMode:        SearchAuto,
 		BudgetPolicy:      BudgetError,
@@ -80,6 +82,7 @@ func ConfigFromEnv() Config {
 	cfg.UpstreamRetryMax = envNonNegativeInt("UMANS_UPSTREAM_RETRY_MAX", cfg.UpstreamRetryMax)
 	cfg.UpstreamRetryBase = envDuration("UMANS_UPSTREAM_RETRY_BASE_DELAY", cfg.UpstreamRetryBase)
 	cfg.UpstreamRetryCap = envDuration("UMANS_UPSTREAM_RETRY_MAX_DELAY", cfg.UpstreamRetryCap)
+	cfg.SchemaCompat = envBool("UMANS_SCHEMA_COMPAT", cfg.SchemaCompat)
 	cfg.ErrorEventDir = envString("UMANS_ERROR_EVENT_DIR", cfg.ErrorEventDir)
 	cfg.SearchMode = SearchMode(envString("UMANS_SEARCH_MODE", string(cfg.SearchMode)))
 	cfg.BudgetPolicy = BudgetPolicy(envString("UMANS_BUDGET_POLICY", string(cfg.BudgetPolicy)))
@@ -157,6 +160,18 @@ func envNonNegativeInt(name string, fallback int) int {
 	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			return n
+		}
+	}
+	return fallback
+}
+
+func envBool(name string, fallback bool) bool {
+	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+		switch strings.ToLower(v) {
+		case "1", "true", "yes", "on":
+			return true
+		case "0", "false", "no", "off":
+			return false
 		}
 	}
 	return fallback
