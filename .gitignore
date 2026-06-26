@@ -19,6 +19,7 @@ dist-new-clean/
 dist-new-retry/
 open-source/
 github-open-source/
+release-assets/
 umans-logs-*/
 
 # Static audit/private conversation bundles
