@@ -35,6 +35,7 @@ type Config struct {
 	KeyConcurrency    int
 	KeyQueueTimeout   time.Duration
 	UpstreamRetryMax  int
+	Retry429          bool
 	UpstreamRetryBase time.Duration
 	UpstreamRetryCap  time.Duration
 	SchemaCompat      bool
@@ -57,6 +58,7 @@ func DefaultConfig() Config {
 		KeyConcurrency:    4,
 		KeyQueueTimeout:   10 * time.Minute,
 		UpstreamRetryMax:  2,
+		Retry429:          false,
 		UpstreamRetryBase: 2 * time.Second,
 		UpstreamRetryCap:  5 * time.Second,
 		SchemaCompat:      true,
@@ -80,6 +82,7 @@ func ConfigFromEnv() Config {
 	cfg.KeyConcurrency = envInt("UMANS_KEY_CONCURRENCY_LIMIT", cfg.KeyConcurrency)
 	cfg.KeyQueueTimeout = envDuration("UMANS_KEY_QUEUE_TIMEOUT", cfg.KeyQueueTimeout)
 	cfg.UpstreamRetryMax = envNonNegativeInt("UMANS_UPSTREAM_RETRY_MAX", cfg.UpstreamRetryMax)
+	cfg.Retry429 = envBool("UMANS_RETRY_429", cfg.Retry429)
 	cfg.UpstreamRetryBase = envDuration("UMANS_UPSTREAM_RETRY_BASE_DELAY", cfg.UpstreamRetryBase)
 	cfg.UpstreamRetryCap = envDuration("UMANS_UPSTREAM_RETRY_MAX_DELAY", cfg.UpstreamRetryCap)
 	cfg.SchemaCompat = envBool("UMANS_SCHEMA_COMPAT", cfg.SchemaCompat)

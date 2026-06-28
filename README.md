@@ -57,7 +57,7 @@ The Umans CLI is useful, but some users do not want to run external installer or
 - **Image/tool/reasoning payload preservation**: unknown fields and image blocks are forwarded
 - **Server-side search header forwarding**: `X-Umans-Websearch-Provider`
 - **Per-key concurrency queue**: default 4 active requests per API key
-- **Transient upstream retry**: default 2 retries for temporary unavailable, `429`, `5xx`, `502`, `503`, `504`, and `529`
+- **Transient upstream retry**: default 2 retries for temporary unavailable, `5xx`, `502`, `503`, `504`, and `529`; `429` retry is opt-in
 - **Claude Code model suffix cleanup**: `umans-glm-5.2[1m]` is forwarded as `umans-glm-5.2`
 - **JSON Schema compatibility**: optional old tuple-style `items: [...]` cleanup for strict upstream validators
 
@@ -109,6 +109,7 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 | `UMANS_KEY_CONCURRENCY_LIMIT` | `4` | Active request limit per API key |
 | `UMANS_KEY_QUEUE_TIMEOUT` | `10m` | Max time a request waits for a per-key slot |
 | `UMANS_UPSTREAM_RETRY_MAX` | `2` | Retry count after the first upstream attempt |
+| `UMANS_RETRY_429` | `false` | Opt in to retrying upstream `429`; keep `false` to avoid amplifying concurrency limit hits |
 | `UMANS_UPSTREAM_RETRY_BASE_DELAY` | `2s` | Initial retry delay |
 | `UMANS_UPSTREAM_RETRY_MAX_DELAY` | `5s` | Maximum retry delay |
 | `UMANS_SCHEMA_COMPAT` | `true` | Convert old tuple-style JSON Schema `items: [...]` into `prefixItems` for strict validators |
@@ -208,7 +209,7 @@ Umans CLI 本身能用，但如果你不想在主力机器上运行外部 instal
 - **图片、工具、reasoning 字段保留**：未知字段和图片块原样转发
 - **服务器搜索 header 转发**：`X-Umans-Websearch-Provider`
 - **按 key 并发队列**：默认每个 API key 同时 4 个请求
-- **上游瞬断自动重试**：默认对临时不可用、`429`、`5xx`、`502`、`503`、`504`、`529` 重试 2 次
+- **上游瞬断自动重试**：默认对临时不可用、`5xx`、`502`、`503`、`504`、`529` 重试 2 次；`429` 需显式开启
 - **Claude Code 模型后缀清洗**：`umans-glm-5.2[1m]` 会按 `umans-glm-5.2` 转发
 - **JSON Schema 兼容清洗**：可选地把旧 tuple 写法 `items: [...]` 转成严格校验器接受的 `prefixItems`
 
@@ -260,6 +261,7 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 | `UMANS_KEY_CONCURRENCY_LIMIT` | `4` | 每个 API key 的同时活跃请求上限 |
 | `UMANS_KEY_QUEUE_TIMEOUT` | `10m` | 同 key 请求排队等待上限 |
 | `UMANS_UPSTREAM_RETRY_MAX` | `2` | 首次上游请求失败后的重试次数 |
+| `UMANS_RETRY_429` | `false` | 是否重试上游 `429`；保持 `false` 可避免放大并发限流命中 |
 | `UMANS_UPSTREAM_RETRY_BASE_DELAY` | `2s` | 初始重试等待时间 |
 | `UMANS_UPSTREAM_RETRY_MAX_DELAY` | `5s` | 最大重试等待时间 |
 | `UMANS_SCHEMA_COMPAT` | `true` | 将旧 tuple-style JSON Schema `items: [...]` 转成严格校验器接受的 `prefixItems` |

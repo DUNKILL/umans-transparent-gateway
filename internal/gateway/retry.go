@@ -39,7 +39,7 @@ func (s *Service) doUpstreamWithRetry(ctx context.Context, build func(context.Co
 		if readErr != nil {
 			return resp, attempt + 1, nil
 		}
-		if attempt+1 < attempts && shouldRetryUpstream(resp.StatusCode, body) {
+		if attempt+1 < attempts && shouldRetryUpstream(resp.StatusCode, body, s.cfg.Retry429) {
 			resp.Body.Close()
 			if waitRetry(ctx, s.retryDelay(attempt)) {
 				continue
@@ -61,7 +61,10 @@ func readAndRestoreBody(resp *http.Response) ([]byte, error) {
 	return body, nil
 }
 
-func shouldRetryUpstream(status int, body []byte) bool {
+func shouldRetryUpstream(status int, body []byte, retry429 bool) bool {
+	if status == http.StatusTooManyRequests {
+		return retry429
+	}
 	if retryableStatus(status) {
 		return true
 	}
@@ -75,7 +78,7 @@ func shouldRetryUpstream(status int, body []byte) bool {
 
 func retryableStatus(status int) bool {
 	switch status {
-	case http.StatusRequestTimeout, http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout, 529:
+	case http.StatusRequestTimeout, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout, 529:
 		return true
 	default:
 		return status >= 500 && status != http.StatusNotImplemented

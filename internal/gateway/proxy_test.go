@@ -260,3 +260,60 @@ func TestProxyRetriesTemporaryUnavailableAndHoldsKeySlot(t *testing.T) {
 		t.Fatalf("upstream attempts=%d", got)
 	}
 }
+
+func TestProxyDoesNotRetry429ByDefault(t *testing.T) {
+	var attempts atomic.Int32
+	svc, _ := newTestService(t, func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limited"}}`))
+	})
+	svc.cfg.UpstreamRetryMax = 2
+	svc.cfg.UpstreamRetryBase = time.Millisecond
+	svc.cfg.UpstreamRetryCap = time.Millisecond
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"umans-glm-5.2","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("x-api-key", "sk-test")
+	rr := httptest.NewRecorder()
+	svc.Routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("code=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("upstream attempts=%d", got)
+	}
+	if got := rr.Header().Get("X-Umans-Gateway-Retry-Attempts"); got != "" {
+		t.Fatalf("retry attempts header=%q", got)
+	}
+}
+
+func TestProxyRetries429WhenExplicitlyEnabled(t *testing.T) {
+	var attempts atomic.Int32
+	svc, _ := newTestService(t, func(w http.ResponseWriter, r *http.Request) {
+		attempt := attempts.Add(1)
+		if attempt == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"message":"rate limited"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"msg_1","content":[{"type":"text","text":"ok"}]}`))
+	})
+	svc.cfg.UpstreamRetryMax = 1
+	svc.cfg.Retry429 = true
+	svc.cfg.UpstreamRetryBase = time.Millisecond
+	svc.cfg.UpstreamRetryCap = time.Millisecond
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"umans-glm-5.2","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("x-api-key", "sk-test")
+	rr := httptest.NewRecorder()
+	svc.Routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if got := attempts.Load(); got != 2 {
+		t.Fatalf("upstream attempts=%d", got)
+	}
+	if got := rr.Header().Get("X-Umans-Gateway-Retry-Attempts"); got != "1" {
+		t.Fatalf("retry attempts header=%q", got)
+	}
+}
