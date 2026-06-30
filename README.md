@@ -56,7 +56,7 @@ The Umans CLI is useful, but some users do not want to run external installer or
 - **WebSocket bridge**: `GET /ws`
 - **Embedded admin UI**: `GET /admin/` with password-protected management APIs
 - **Managed upstream key pool**: add/delete keys in `config/key.json`, with per-key concurrency limits
-- **Sticky sessions and load balancing**: 10s sticky window by default; when the sticky key is full, the gateway waits for the configured queue timeout before switching; otherwise it prefers keys with lower active concurrency
+- **Sticky sessions and load balancing**: session-based stickiness so the same conversation keeps hitting the same upstream key for better cache hit rates. The session identity is read from the request body — `metadata.user_id` on `/v1/messages`, `prompt_cache_key` on `/v1/responses`, and `session_id` on any endpoint (platform-specific fields take priority). When none is present, the gateway generates a random id and returns it in the `X-Umans-Session-Id` response header; echo it back on subsequent requests via the same request header. 10s sticky window by default; when the sticky key is full, the gateway waits for the configured queue timeout before switching; otherwise it prefers keys with lower active concurrency
 - **Image/tool/reasoning payload preservation**: unknown fields and image blocks are forwarded
 - **Server-side search header forwarding**: `X-Umans-Websearch-Provider`
 - **Per-key concurrency queue**: default 4 active requests per API key and 50s queue timeout
@@ -121,8 +121,11 @@ Runtime configuration now lives in `config/config.json`; managed upstream keys l
 | `proxyAccessToken` | empty | Required client token when managed keys are enabled; requests must send this value via `Authorization` or `x-api-key` |
 | `keyConcurrencyLimit` | `4` | Default active request limit per key; individual managed keys may override it |
 | `keyQueueTimeout` | `50s` | Max time a request waits for a key slot; sticky-session waiting uses this same value |
-| `stickySession` | `true` | Reuse the previous managed key for the same client token within the sticky window |
+| `stickySession` | `true` | Reuse the previous managed key for the same session within the sticky window |
 | `stickySessionTTL` | `10s` | Sticky session window |
+| `keyErrorThreshold` | `3` | Number of upstream errors within `keyErrorWindow` before a key enters backoff |
+| `keyErrorWindow` | `60s` | Rolling window for counting key errors |
+| `keyErrorBackoff` | `30s` | How long a key is excluded from routing after hitting the error threshold |
 | `searchMode` | `exa` | `exa`, `native`, `auto`, or `none`; forced modes inject `X-Umans-Websearch-Provider` upstream |
 | `budgetPolicy` | `error` | `error` or `clamp-visible` for output token budget handling |
 | `upstreamRetryMax` | `2` | Retry count after the first upstream attempt |
@@ -228,7 +231,7 @@ Umans CLI 本身能用，但如果你不想在主力机器上运行外部 instal
 - **WebSocket bridge**：`GET /ws`
 - **内置管理页面**：`GET /admin/`，管理 API 需要访问密码
 - **托管上游 key 池**：在 `config/key.json` 中添加/删除 key，并支持每个 key 独立并发上限
-- **粘性会话与负载均衡**：默认 10 秒粘性窗口；粘性 key 满载时先等待配置的排队时间，超时后再切换；普通选择优先使用当前活跃并发更低的 key
+- **粘性会话与负载均衡**：基于会话的粘性，使同一会话持续命中同一上游 key 以提升缓存命中率。会话身份从请求体读取——`/v1/messages` 取 `metadata.user_id`，`/v1/responses` 取 `prompt_cache_key`，任意端点取 `session_id`（平台专属字段优先）。当以上都不存在时，网关生成随机 id 并通过 `X-Umans-Session-Id` 响应头返回，后续请求用同名请求头带回即可。默认 10 秒粘性窗口；粘性 key 满载时先等待配置的排队时间，超时后再切换；普通选择优先使用当前活跃并发更低的 key
 - **图片、工具、reasoning 字段保留**：未知字段和图片块原样转发
 - **服务器搜索 header 转发**：`X-Umans-Websearch-Provider`
 - **按 key 并发队列**：默认每个 API key 同时 4 个请求，默认排队等待 50 秒
@@ -293,8 +296,11 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 | `proxyAccessToken` | 空 | 托管 key 池启用时必须设置；客户端请求需通过 `Authorization` 或 `x-api-key` 发送这个值 |
 | `keyConcurrencyLimit` | `4` | 每个 key 的默认活跃请求上限；单个托管 key 可覆盖 |
 | `keyQueueTimeout` | `50s` | 并发满载时请求等待 key 槽的最长时间；粘性会话等待也使用同一个值 |
-| `stickySession` | `true` | 同一客户端 token 在粘性窗口内优先复用上一次选中的托管 key |
+| `stickySession` | `true` | 同一会话在粘性窗口内优先复用上一次选中的托管 key |
 | `stickySessionTTL` | `10s` | 粘性会话窗口 |
+| `keyErrorThreshold` | `3` | 在 `keyErrorWindow` 内上游 key 出错多少次后进入退避 |
+| `keyErrorWindow` | `60s` | key 错误计数的滚动窗口 |
+| `keyErrorBackoff` | `30s` | key 触发错误阈值后被排除出路由的时长 |
 | `searchMode` | `exa` | `exa`、`native`、`auto` 或 `none`；强制模式会向上游注入 `X-Umans-Websearch-Provider` |
 | `budgetPolicy` | `error` | 输出 token 预算策略：`error` 或 `clamp-visible` |
 | `upstreamRetryMax` | `2` | 首次上游请求失败后的重试次数 |

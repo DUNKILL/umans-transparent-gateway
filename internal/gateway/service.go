@@ -175,7 +175,13 @@ func (s *Service) proxyJSON(w http.ResponseWriter, r *http.Request, opts proxyOp
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
-	_, lease, err := s.acquireOutboundKey(r.Context(), r)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "read_body_failed", "failed to read request body")
+		return
+	}
+	defer r.Body.Close()
+	_, lease, sessionID, generated, err := s.acquireOutboundKey(r.Context(), r, opts.Endpoint, body)
 	if err != nil {
 		if isAuthError(err) {
 			writeAuthError(w, err)
@@ -185,13 +191,10 @@ func (s *Service) proxyJSON(w http.ResponseWriter, r *http.Request, opts proxyOp
 		return
 	}
 	defer lease.Release()
-
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "read_body_failed", "failed to read request body")
-		return
+	if generated {
+		w.Header().Set(SessionIDHeader, sessionID)
 	}
-	defer r.Body.Close()
+
 	cfg := s.currentConfig()
 	body = normalizeRequestJSON(body, cfg.SchemaCompat)
 
@@ -223,6 +226,7 @@ func (s *Service) proxyJSON(w http.ResponseWriter, r *http.Request, opts proxyOp
 	})
 	if err != nil {
 		s.recordError("upstream_error", 0, time.Since(start), err)
+		s.recordKeyError(lease)
 		writeError(w, http.StatusBadGateway, "upstream_request_failed", err.Error())
 		return
 	}
@@ -240,6 +244,7 @@ func (s *Service) proxyJSON(w http.ResponseWriter, r *http.Request, opts proxyOp
 	}
 	if errForLog != nil {
 		s.recordError("upstream_status", resp.StatusCode, time.Since(start), errForLog)
+		s.recordKeyError(lease)
 	}
 }
 
@@ -284,38 +289,44 @@ func (s *Service) applyBudgetPolicy(ctx context.Context, key string, body []byte
 	return nil, fmt.Sprintf("reject:%s=%d>%d", usedField, requested, maxOutput), fmt.Errorf("%s %d exceeds safe catalog output cap %d", usedField, requested, maxOutput)
 }
 
-func (s *Service) acquireOutboundKey(ctx context.Context, r *http.Request) (AuthInfo, *KeyLease, error) {
+// acquireOutboundKey selects the upstream key for a request. For managed-key
+// mode, sessionID is the sticky session identifier used (from the request body
+// field, the echoed X-Umans-Session-Id header, or a freshly generated id);
+// generatedSessionID is true when the id was newly generated and the caller
+// should hand it back to the client via the SessionIDHeader response header.
+func (s *Service) acquireOutboundKey(ctx context.Context, r *http.Request, endpoint string, body []byte) (AuthInfo, *KeyLease, string, bool, error) {
 	auth, authErr := ExtractAuth(r.Header)
 	if s.store != nil && s.store.HasManagedKeys() {
 		if authErr != nil {
-			return AuthInfo{}, nil, ErrManagedClientAuthRequired
+			return AuthInfo{}, nil, "", false, ErrManagedClientAuthRequired
 		}
 		cfg := s.currentConfig()
 		if cfg.ProxyAccessToken == "" {
-			return AuthInfo{}, nil, ErrProxyAccessTokenRequired
+			return AuthInfo{}, nil, "", false, ErrProxyAccessTokenRequired
 		}
 		if auth.Key != cfg.ProxyAccessToken {
-			return AuthInfo{}, nil, ErrProxyAccessTokenMismatch
+			return AuthInfo{}, nil, "", false, ErrProxyAccessTokenMismatch
 		}
-		lease, err := s.store.AcquireManaged(ctx, ManagedSessionIdentity(r, auth))
-		return auth, lease, err
+		identity, sessionID, generated := ManagedSessionIdentityFromRequest(r, endpoint, body)
+		lease, err := s.store.AcquireManaged(ctx, identity)
+		return auth, lease, sessionID, generated, err
 	}
 	if authErr != nil {
-		return AuthInfo{}, nil, authErr
+		return AuthInfo{}, nil, "", false, authErr
 	}
 	if s.store != nil {
 		lease, err := s.store.AcquireLegacy(ctx, auth.Key)
-		return auth, lease, err
+		return auth, lease, "", false, err
 	}
 	release, err := s.acquireKeySlot(ctx, auth.Key)
 	if err != nil {
-		return AuthInfo{}, nil, err
+		return AuthInfo{}, nil, "", false, err
 	}
 	return auth, &KeyLease{
 		Key:     auth.Key,
 		Managed: false,
 		release: release,
-	}, nil
+	}, "", false, nil
 }
 
 const searchProviderHeader = "X-Umans-Websearch-Provider"
@@ -351,6 +362,12 @@ func (s *Service) recordError(kind string, statusCode int, latency time.Duration
 			_ = s.recorder.Configure(s.currentConfig())
 		}
 		s.recorder.Record(kind, statusCode, latency, err)
+	}
+}
+
+func (s *Service) recordKeyError(lease *KeyLease) {
+	if s.store != nil && lease != nil && lease.Managed {
+		s.store.RecordKeyError(lease.KeyID)
 	}
 }
 
@@ -569,7 +586,8 @@ func (s *Service) runWSRequest(ctx context.Context, c *websocket.Conn, parent *h
 	}
 	proxyReq := parent.Clone(ctx)
 	proxyReq.Header = h
-	_, lease, err := s.acquireOutboundKey(ctx, proxyReq)
+	rawBody := append([]byte(nil), req.Body...)
+	_, lease, sessionID, generated, err := s.acquireOutboundKey(ctx, proxyReq, req.Endpoint, rawBody)
 	if err != nil {
 		if isAuthError(err) {
 			writeWS(ctx, c, map[string]any{"type": "error", "id": req.ID, "error": map[string]any{"type": "auth_error", "message": err.Error()}})
@@ -580,8 +598,11 @@ func (s *Service) runWSRequest(ctx context.Context, c *websocket.Conn, parent *h
 		return
 	}
 	defer lease.Release()
+	if generated {
+		writeWS(ctx, c, map[string]any{"type": "session", "id": req.ID, "sessionId": sessionID})
+	}
 
-	body := append([]byte(nil), req.Body...)
+	body := rawBody
 	var payload map[string]any
 	cfg := s.currentConfig()
 	body = normalizeRequestJSON(body, cfg.SchemaCompat)
@@ -617,11 +638,13 @@ func (s *Service) runWSRequest(ctx context.Context, c *websocket.Conn, parent *h
 		return upReq, nil
 	})
 	if err != nil {
+		s.recordKeyError(lease)
 		writeWS(ctx, c, map[string]any{"type": "error", "id": req.ID, "error": map[string]any{"type": "upstream_request_failed", "message": redactSecret(err.Error(), lease.Key)}})
 		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		s.recordKeyError(lease)
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		writeWS(ctx, c, map[string]any{"type": "error", "id": req.ID, "status": resp.StatusCode, "error": map[string]any{"type": "upstream_error", "message": redactSecret(string(body), lease.Key)}})
 		return
@@ -636,6 +659,7 @@ func (s *Service) runWSRequest(ctx context.Context, c *websocket.Conn, parent *h
 		writeWS(ctx, c, map[string]any{"type": "event", "id": req.ID, "event": line})
 	}
 	if err := scanner.Err(); err != nil {
+		s.recordKeyError(lease)
 		writeWS(ctx, c, map[string]any{"type": "error", "id": req.ID, "error": map[string]any{"type": "stream_error", "message": err.Error()}})
 		return
 	}

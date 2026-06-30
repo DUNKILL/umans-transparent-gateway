@@ -18,7 +18,13 @@ func (s *Service) handleResponses(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
-	_, lease, err := s.acquireOutboundKey(r.Context(), r)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "read_body_failed", "failed to read request body")
+		return
+	}
+	defer r.Body.Close()
+	_, lease, sessionID, generated, err := s.acquireOutboundKey(r.Context(), r, "/v1/responses", body)
 	if err != nil {
 		if isAuthError(err) {
 			writeAuthError(w, err)
@@ -28,13 +34,10 @@ func (s *Service) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer lease.Release()
-
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "read_body_failed", "failed to read request body")
-		return
+	if generated {
+		w.Header().Set(SessionIDHeader, sessionID)
 	}
-	defer r.Body.Close()
+
 	cfg := s.currentConfig()
 	body = normalizeRequestJSON(body, cfg.SchemaCompat)
 	chatBody, err := responseToChatBody(body)
@@ -58,6 +61,7 @@ func (s *Service) handleResponses(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		s.recordError("upstream_error", 0, time.Since(start), err)
+		s.recordKeyError(lease)
 		writeError(w, http.StatusBadGateway, "upstream_request_failed", err.Error())
 		return
 	}
@@ -70,6 +74,7 @@ func (s *Service) handleResponses(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(resp.StatusCode)
 		_, _ = streamCopy(w, resp.Body)
 		s.recordError("upstream_status", resp.StatusCode, time.Since(start), fmt.Errorf("upstream_status_%d", resp.StatusCode))
+		s.recordKeyError(lease)
 		return
 	}
 	if bodyHasBool(body, "stream") {
@@ -79,6 +84,7 @@ func (s *Service) handleResponses(w http.ResponseWriter, r *http.Request) {
 		_, err := convertChatStreamToResponses(w, resp.Body)
 		if err != nil {
 			s.recordError("stream_error", 0, time.Since(start), err)
+			s.recordKeyError(lease)
 		}
 		return
 	}

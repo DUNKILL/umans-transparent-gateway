@@ -49,6 +49,9 @@ type Config struct {
 	ProxyAccessToken  string
 	StickySession     bool
 	StickySessionTTL  time.Duration
+	KeyErrorThreshold int
+	KeyErrorWindow    time.Duration
+	KeyErrorBackoff   time.Duration
 }
 
 func DefaultConfig() Config {
@@ -76,6 +79,9 @@ func DefaultConfig() Config {
 		ProxyAccessToken:  "",
 		StickySession:     true,
 		StickySessionTTL:  10 * time.Second,
+		KeyErrorThreshold: 3,
+		KeyErrorWindow:    60 * time.Second,
+		KeyErrorBackoff:   30 * time.Second,
 	}
 }
 
@@ -104,6 +110,9 @@ func ConfigFromEnv() Config {
 	cfg.ProxyAccessToken = envString("UMANS_PROXY_ACCESS_TOKEN", cfg.ProxyAccessToken)
 	cfg.StickySession = envBool("UMANS_STICKY_SESSION", cfg.StickySession)
 	cfg.StickySessionTTL = envDuration("UMANS_STICKY_SESSION_TTL", cfg.StickySessionTTL)
+	cfg.KeyErrorThreshold = envNonNegativeInt("UMANS_KEY_ERROR_THRESHOLD", cfg.KeyErrorThreshold)
+	cfg.KeyErrorWindow = envDuration("UMANS_KEY_ERROR_WINDOW", cfg.KeyErrorWindow)
+	cfg.KeyErrorBackoff = envDuration("UMANS_KEY_ERROR_BACKOFF", cfg.KeyErrorBackoff)
 	return cfg
 }
 
@@ -148,6 +157,12 @@ func (c Config) Validate() error {
 	}
 	if c.StickySessionTTL <= 0 {
 		return errors.New("sticky session ttl must be positive")
+	}
+	if c.KeyErrorThreshold > 0 && c.KeyErrorWindow <= 0 {
+		return errors.New("key error window must be positive when key error threshold is enabled")
+	}
+	if c.KeyErrorThreshold > 0 && c.KeyErrorBackoff <= 0 {
+		return errors.New("key error backoff must be positive when key error threshold is enabled")
 	}
 	return nil
 }

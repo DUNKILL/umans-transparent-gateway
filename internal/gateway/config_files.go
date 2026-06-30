@@ -38,6 +38,9 @@ type ConfigFile struct {
 	ProxyAccessToken       string `json:"proxyAccessToken"`
 	StickySession          bool   `json:"stickySession"`
 	StickySessionTTL       string `json:"stickySessionTTL"`
+	KeyErrorThreshold      int    `json:"keyErrorThreshold"`
+	KeyErrorWindow         string `json:"keyErrorWindow"`
+	KeyErrorBackoff        string `json:"keyErrorBackoff"`
 }
 
 type ManagedKey struct {
@@ -167,6 +170,9 @@ func ConfigToFile(cfg Config) ConfigFile {
 		ProxyAccessToken:       cfg.ProxyAccessToken,
 		StickySession:          cfg.StickySession,
 		StickySessionTTL:       cfg.StickySessionTTL.String(),
+		KeyErrorThreshold:      cfg.KeyErrorThreshold,
+		KeyErrorWindow:         cfg.KeyErrorWindow.String(),
+		KeyErrorBackoff:        cfg.KeyErrorBackoff.String(),
 	}
 }
 
@@ -234,6 +240,21 @@ func (f ConfigFile) ToConfig() (Config, error) {
 			return Config{}, err
 		}
 		cfg.StickySessionTTL = d
+	}
+	cfg.KeyErrorThreshold = f.KeyErrorThreshold
+	if f.KeyErrorWindow != "" {
+		d, err := time.ParseDuration(f.KeyErrorWindow)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.KeyErrorWindow = d
+	}
+	if f.KeyErrorBackoff != "" {
+		d, err := time.ParseDuration(f.KeyErrorBackoff)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.KeyErrorBackoff = d
 	}
 	return cfg, nil
 }

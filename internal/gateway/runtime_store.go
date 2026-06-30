@@ -6,7 +6,9 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"sort"
@@ -37,6 +39,7 @@ type RuntimeStore struct {
 	active       map[string]int
 	legacyActive map[string]int
 	sticky       map[string]stickyEntry
+	keyErrors    map[string]keyErrorState
 	notify       chan struct{}
 	admin        *AdminSessions
 	adminLimiter *AdminLoginLimiter
@@ -46,6 +49,15 @@ type RuntimeStore struct {
 type stickyEntry struct {
 	KeyID     string
 	ExpiresAt time.Time
+}
+
+// keyErrorState tracks recent errors for a managed key. When Count reaches the
+// configured threshold within WindowStart+KeyErrorWindow, the key enters a
+// backoff period until BackoffUntil.
+type keyErrorState struct {
+	WindowStart  time.Time
+	Count        int
+	BackoffUntil time.Time
 }
 
 type KeyLease struct {
@@ -66,15 +78,16 @@ func (l *KeyLease) Release() {
 }
 
 type KeyStatus struct {
-	ID               string `json:"id"`
-	Name             string `json:"name"`
-	Enabled          bool   `json:"enabled"`
-	ConcurrencyLimit int    `json:"concurrencyLimit"`
-	Active           int    `json:"active"`
-	StickySessions   int    `json:"stickySessions"`
-	KeyPreview       string `json:"keyPreview"`
-	CreatedAt        string `json:"createdAt,omitempty"`
-	UpdatedAt        string `json:"updatedAt,omitempty"`
+	ID               string     `json:"id"`
+	Name             string     `json:"name"`
+	Enabled          bool       `json:"enabled"`
+	ConcurrencyLimit int        `json:"concurrencyLimit"`
+	Active           int        `json:"active"`
+	StickySessions   int        `json:"stickySessions"`
+	BackoffUntil     *time.Time `json:"backoffUntil,omitempty"`
+	KeyPreview       string     `json:"keyPreview"`
+	CreatedAt        string     `json:"createdAt,omitempty"`
+	UpdatedAt        string     `json:"updatedAt,omitempty"`
 }
 
 func NewRuntimeStore(dir string) (*RuntimeStore, error) {
@@ -96,6 +109,7 @@ func NewRuntimeStore(dir string) (*RuntimeStore, error) {
 		active:       map[string]int{},
 		legacyActive: map[string]int{},
 		sticky:       map[string]stickyEntry{},
+		keyErrors:    map[string]keyErrorState{},
 		notify:       make(chan struct{}),
 		admin:        NewAdminSessions(),
 		adminLimiter: NewAdminLoginLimiter(),
@@ -192,7 +206,7 @@ func (s *RuntimeStore) Status() []KeyStatus {
 		if limit <= 0 {
 			limit = s.cfg.KeyConcurrency
 		}
-		statuses = append(statuses, KeyStatus{
+		status := KeyStatus{
 			ID:               k.ID,
 			Name:             k.Name,
 			Enabled:          k.Enabled,
@@ -202,7 +216,11 @@ func (s *RuntimeStore) Status() []KeyStatus {
 			KeyPreview:       RedactKey(k.Key, 8),
 			CreatedAt:        k.CreatedAt,
 			UpdatedAt:        k.UpdatedAt,
-		})
+		}
+		if until := s.keyErrors[k.ID].BackoffUntil; !until.IsZero() && now.Before(until) {
+			status.BackoffUntil = &until
+		}
+		statuses = append(statuses, status)
 	}
 	return statuses
 }
@@ -350,26 +368,19 @@ func (s *RuntimeStore) AcquireManaged(ctx context.Context, sessionIdentity strin
 		if cfg.StickySession && !stickyWaited {
 			if st, ok := s.sticky[sessionID]; ok && now.Before(st.ExpiresAt) {
 				if k, ok := managedKeyByID(keys, st.KeyID); ok {
-					if s.canAcquireLocked(k, cfg) {
+					if s.canAcquireLocked(k, cfg) && !s.isKeyInBackoffLocked(k.ID, now) {
 						lease := s.acquireManagedLocked(k, sessionID, true, cfg, now)
 						s.mu.Unlock()
 						return lease, nil
 					}
-					notify := s.notify
-					s.mu.Unlock()
-					switch waitForNotifyUntil(ctx, notify, deadline) {
-					case waitChanged:
-						continue
-					case waitTimedOut:
-						stickyWaited = true
-						continue
-					default:
-						return nil, ErrManagedKeyWaitCanceled
-					}
+					// Sticky key is full or in backoff: don't wait for it, fall
+					// through to load balancing immediately.
+					stickyWaited = true
+					continue
 				}
 			}
 		}
-		if k, ok := s.pickAvailableKeyLocked(keys, cfg); ok {
+		if k, ok := s.pickAvailableKeyLocked(keys, cfg, now); ok {
 			lease := s.acquireManagedLocked(k, sessionID, false, cfg, now)
 			s.mu.Unlock()
 			return lease, nil
@@ -434,11 +445,11 @@ func (s *RuntimeStore) canAcquireLocked(k ManagedKey, cfg Config) bool {
 	return s.active[k.ID] < limit
 }
 
-func (s *RuntimeStore) pickAvailableKeyLocked(keys []ManagedKey, cfg Config) (ManagedKey, bool) {
+func (s *RuntimeStore) pickAvailableKeyLocked(keys []ManagedKey, cfg Config, now time.Time) (ManagedKey, bool) {
 	var picked ManagedKey
 	found := false
 	for _, k := range keys {
-		if !s.canAcquireLocked(k, cfg) {
+		if !s.canAcquireLocked(k, cfg) || s.isKeyInBackoffLocked(k.ID, now) {
 			continue
 		}
 		if !found || s.active[k.ID] < s.active[picked.ID] {
@@ -474,11 +485,64 @@ func (s *RuntimeStore) cleanupStickyLocked(now time.Time) {
 			delete(s.sticky, id)
 		}
 	}
+	s.cleanupKeyErrorsLocked(now)
 }
 
 func (s *RuntimeStore) signalLocked() {
 	close(s.notify)
 	s.notify = make(chan struct{})
+}
+
+// RecordKeyError registers an upstream failure for a managed key. When the
+// number of errors within KeyErrorWindow reaches KeyErrorThreshold, the key is
+// put into backoff for KeyErrorBackoff. A key in backoff will not be picked by
+// sticky routing or load balancing.
+func (s *RuntimeStore) RecordKeyError(keyID string) {
+	if s == nil {
+		return
+	}
+	cfg := s.Config()
+	if cfg.KeyErrorThreshold <= 0 || cfg.KeyErrorBackoff <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	state := s.keyErrors[keyID]
+	if state.BackoffUntil.IsZero() {
+		state.BackoffUntil = now
+	}
+	// Reset the error window if the previous backoff has expired and the
+	// counting window is stale.
+	if now.After(state.BackoffUntil) && now.After(state.WindowStart.Add(cfg.KeyErrorWindow)) {
+		state.WindowStart = now
+		state.Count = 0
+	}
+	if state.WindowStart.IsZero() {
+		state.WindowStart = now
+	}
+	state.Count++
+	if state.Count >= cfg.KeyErrorThreshold {
+		state.BackoffUntil = now.Add(cfg.KeyErrorBackoff)
+		state.WindowStart = time.Time{}
+		state.Count = 0
+	}
+	s.keyErrors[keyID] = state
+	// Wake up waiters so that requests previously blocked on this key can
+	// immediately try other keys.
+	s.signalLocked()
+}
+
+func (s *RuntimeStore) isKeyInBackoffLocked(keyID string, now time.Time) bool {
+	return now.Before(s.keyErrors[keyID].BackoffUntil)
+}
+
+func (s *RuntimeStore) cleanupKeyErrorsLocked(now time.Time) {
+	for id, state := range s.keyErrors {
+		if now.After(state.BackoffUntil) && now.After(state.WindowStart.Add(s.cfg.KeyErrorWindow)) {
+			delete(s.keyErrors, id)
+		}
+	}
 }
 
 func (s *RuntimeStore) hashID(prefix, value string) string {
@@ -489,15 +553,82 @@ func (s *RuntimeStore) hashID(prefix, value string) string {
 	return prefix + "_" + hex.EncodeToString(mac.Sum(nil))
 }
 
-func ManagedSessionIdentity(r *http.Request, auth AuthInfo) string {
-	if auth.Key != "" {
-		return "auth:" + auth.Key
+// SessionIDHeader is the response/request header used to hand a generated
+// session id back to the client and have it echoed on subsequent requests.
+const SessionIDHeader = "X-Umans-Session-Id"
+
+// ManagedSessionIdentityFromRequest derives the sticky-session identity for a
+// managed-key request. The priority is:
+//  1. A session field in the request body (platform-specific field first, then
+//     the common session_id), see extractSessionIdentity.
+//  2. The X-Umans-Session-Id request header echoed back by the client.
+//  3. A freshly generated random id (returned so the caller can hand it back to
+//     the client via the SessionIDHeader response header).
+//
+// When a body field or echoed header is used, sessionID is that value and
+// generated is false. When a new id is generated, generated is true and the
+// caller should send sessionID back to the client.
+//
+// body is the already-read original request body (before any format
+// conversion, so prompt_cache_key is still present for Codex requests).
+func ManagedSessionIdentityFromRequest(r *http.Request, endpoint string, body []byte) (identity, sessionID string, generated bool) {
+	if sid := extractSessionIdentity(endpoint, body); sid != "" {
+		return "session:" + sid, sid, false
 	}
-	xff := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0])
-	if xff == "" {
-		xff = r.RemoteAddr
+	if sid := strings.TrimSpace(r.Header.Get(SessionIDHeader)); sid != "" {
+		return "session:" + sid, sid, false
 	}
-	return "remote:" + xff + "|ua:" + r.UserAgent()
+	sid := generateSessionID()
+	return "session:" + sid, sid, true
+}
+
+// generateSessionID returns a fresh random session identifier (32 hex chars,
+// prefixed with "gw_" so gateway-generated ids are distinguishable from
+// client-supplied ones in logs and responses).
+func generateSessionID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand should not fail in practice; fall back to a
+		// time-based value to guarantee uniqueness across calls.
+		return fmt.Sprintf("gw_%d", time.Now().UnixNano())
+	}
+	return "gw_" + hex.EncodeToString(b)
+}
+
+// extractSessionIdentity reads the sticky session identifier from the request
+// body according to the endpoint's preferred field. It returns the trimmed
+// identifier, or "" when no usable field is present.
+//
+// Platform-specific fields take priority over the common session_id:
+//   - "/v1/messages":  metadata.user_id, then session_id
+//   - "/v1/responses": prompt_cache_key, then session_id
+//   - other endpoints: session_id
+func extractSessionIdentity(endpoint string, body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return ""
+	}
+	switch endpoint {
+	case "/v1/messages":
+		if meta, ok := payload["metadata"].(map[string]any); ok {
+			if s := stringValue(meta["user_id"], ""); s != "" {
+				return s
+			}
+		}
+	case "/v1/responses":
+		if s := stringValue(payload["prompt_cache_key"], ""); s != "" {
+			return s
+		}
+	}
+	if v, ok := payload["session_id"].(string); ok {
+		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 func keyLimit(k ManagedKey, cfg Config) int {

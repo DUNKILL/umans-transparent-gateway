@@ -25,6 +25,9 @@ type Config = {
   proxyAccessToken: string;
   stickySession: boolean;
   stickySessionTTL: string;
+  keyErrorThreshold: number;
+  keyErrorWindow: string;
+  keyErrorBackoff: string;
 };
 
 type KeyStatus = {
@@ -34,6 +37,7 @@ type KeyStatus = {
   concurrencyLimit: number;
   active: number;
   stickySessions: number;
+  backoffUntil?: string;
   keyPreview: string;
   createdAt?: string;
   updatedAt?: string;
@@ -124,7 +128,7 @@ const configFields: ConfigField[] = [
     label: '启用粘性会话',
     type: 'checkbox',
     section: 'routing',
-    description: '开启后，同一客户端 token 在粘性窗口内会优先复用上一次选中的上游 key，减少上下文切换带来的不稳定。',
+    description: '开启后，同一会话在粘性窗口内会优先复用上一次选中的上游 key，减少上下文切换带来的不稳定。会话身份优先使用请求体的 session_id / metadata.user_id / prompt_cache_key，缺失时网关会生成并通过 X-Umans-Session-Id 头部下发。',
   },
   {
     key: 'stickySessionTTL',
@@ -132,6 +136,27 @@ const configFields: ConfigField[] = [
     type: 'text',
     section: 'routing',
     description: '同一客户端 token 记住上次 key 的有效时间，默认 10s。窗口过期后会重新按负载均衡选择当前并发数更小的 key。',
+  },
+  {
+    key: 'keyErrorThreshold',
+    label: 'Key 错误阈值',
+    type: 'number',
+    section: 'routing',
+    description: '在 keyErrorWindow 时间窗口内，某个上游 key 出错达到此数量时会进入退避状态。设为 0 可禁用错误退避。',
+  },
+  {
+    key: 'keyErrorWindow',
+    label: 'Key 错误窗口',
+    type: 'text',
+    section: 'routing',
+    description: '计算 key 错误次数的时间窗口，例如 60s。超过此窗口的旧错误会被清除。',
+  },
+  {
+    key: 'keyErrorBackoff',
+    label: 'Key 退避时间',
+    type: 'text',
+    section: 'routing',
+    description: 'key 触发错误阈值后，网关在多长时间内不再将请求路由到该 key，例如 30s。',
   },
   {
     key: 'searchMode',
@@ -503,6 +528,7 @@ function renderKeyTable(keys: KeyStatus[]) {
             <th>状态</th>
             <th>活跃/上限</th>
             <th>粘性会话</th>
+            <th>退避</th>
             <th></th>
           </tr>
         </thead>
@@ -514,6 +540,7 @@ function renderKeyTable(keys: KeyStatus[]) {
               <td><span class="pill ${key.enabled ? 'enabled' : ''}">${key.enabled ? '启用' : '停用'}</span></td>
               <td class="key-load-cell">${renderKeyLoad(key)}</td>
               <td class="key-sticky-cell">${key.stickySessions}</td>
+              <td class="key-backoff-cell">${renderKeyBackoff(key)}</td>
               <td class="row-actions">
                 <button class="ghost edit-key" data-id="${escapeAttr(key.id)}">编辑</button>
                 <button class="danger delete-key" data-id="${escapeAttr(key.id)}">${icon('trash-2')}</button>
@@ -524,6 +551,16 @@ function renderKeyTable(keys: KeyStatus[]) {
       </table>
     </div>
   `;
+}
+
+function renderKeyBackoff(key: KeyStatus) {
+  if (!key.backoffUntil) {
+    return '<span class="pill">无</span>';
+  }
+  const until = new Date(key.backoffUntil);
+  const left = Math.max(0, until.getTime() - Date.now());
+  const seconds = Math.ceil(left / 1000);
+  return `<span class="pill danger">退避 ${seconds}s</span>`;
 }
 
 function renderKeyLoad(key: KeyStatus) {
@@ -552,6 +589,10 @@ function updateKeyRows(keys: KeyStatus[]) {
     const sticky = row.querySelector<HTMLElement>('.key-sticky-cell');
     if (sticky) {
       sticky.textContent = String(key.stickySessions);
+    }
+    const backoff = row.querySelector<HTMLElement>('.key-backoff-cell');
+    if (backoff) {
+      backoff.innerHTML = renderKeyBackoff(key);
     }
   });
 }

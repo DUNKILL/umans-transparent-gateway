@@ -435,6 +435,11 @@ td small {
   background: #e8f7f2;
 }
 
+.pill.danger {
+  color: #9a1b1b;
+  background: #fde8e8;
+}
+
 .meter {
   width: 96px;
   height: 8px;
