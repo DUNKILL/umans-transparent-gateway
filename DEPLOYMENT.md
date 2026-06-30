@@ -1,22 +1,43 @@
 # 部署说明
 
-本文面向服务器部署。服务不保存 API key，客户端请求时透传 `Authorization: Bearer <key>` 或 `x-api-key: <key>`。
+本文面向服务器部署。网关支持两种 key 模式：
+
+- 未配置托管 key 时，客户端请求里的 `Authorization: Bearer <key>` 或 `x-api-key: <key>` 会直接透传到上游。
+- 在 `/admin/` 添加托管 key 后，网关会从 `config/key.json` 里的 key 池按粘性会话和负载均衡选择上游 key。
+
+运行配置在 `config/config.json`，托管 key 在 `config/key.json`。两个文件不存在时会在启动时自动创建。
 
 ## 方式一：直接二进制
 
 Linux amd64:
 
 ```bash
-install -m 0755 umans-gateway-linux-amd64 /usr/local/bin/umans-gateway
-UMANS_GATEWAY_LISTEN=0.0.0.0:8080 /usr/local/bin/umans-gateway
+sudo mkdir -p /var/lib/umans-gateway/config
+sudo cp config/config.example.json /var/lib/umans-gateway/config/config.json
+sudo cp config/key.example.json /var/lib/umans-gateway/config/key.json
+sudo install -m 0755 umans-gateway-linux-amd64 /usr/local/bin/umans-gateway
+cd /var/lib/umans-gateway
+/usr/local/bin/umans-gateway
 ```
 
 Linux arm64:
 
 ```bash
-install -m 0755 umans-gateway-linux-arm64 /usr/local/bin/umans-gateway
-UMANS_GATEWAY_LISTEN=0.0.0.0:8080 /usr/local/bin/umans-gateway
+sudo mkdir -p /var/lib/umans-gateway/config
+sudo cp config/config.example.json /var/lib/umans-gateway/config/config.json
+sudo cp config/key.example.json /var/lib/umans-gateway/config/key.json
+sudo install -m 0755 umans-gateway-linux-arm64 /usr/local/bin/umans-gateway
+cd /var/lib/umans-gateway
+/usr/local/bin/umans-gateway
 ```
+
+启动后访问：
+
+```text
+http://your-server:8080/admin/
+```
+
+默认管理密码是 `change-me`，对外暴露前必须修改。
 
 ## systemd
 
@@ -30,8 +51,12 @@ deploy/systemd/umans-gateway.service
 
 ```bash
 sudo useradd --system --home /var/lib/umans-gateway --shell /usr/sbin/nologin umans-gateway
-sudo mkdir -p /etc/umans-gateway /var/lib/umans-gateway
-sudo cp .env.example /etc/umans-gateway/env
+sudo mkdir -p /var/lib/umans-gateway/config
+sudo cp config/config.example.json /var/lib/umans-gateway/config/config.json
+sudo cp config/key.example.json /var/lib/umans-gateway/config/key.json
+sudo chown -R umans-gateway:umans-gateway /var/lib/umans-gateway
+sudo chmod 0700 /var/lib/umans-gateway/config
+sudo chmod 0600 /var/lib/umans-gateway/config/*.json
 sudo install -m 0755 umans-gateway-linux-amd64 /usr/local/bin/umans-gateway
 sudo cp deploy/systemd/umans-gateway.service /etc/systemd/system/umans-gateway.service
 sudo systemctl daemon-reload
@@ -50,10 +75,14 @@ deploy/docker/Dockerfile
 运行：
 
 ```bash
-cp .env.example .env
+mkdir -p config
+cp -n config/config.example.json config/config.json
+cp -n config/key.example.json config/key.json
 docker compose -f deploy/docker/docker-compose.yml up -d --build
 curl http://127.0.0.1:8080/healthz
 ```
+
+Docker Compose 会把本地 `config/` 挂载到容器的 `/var/lib/umans-gateway/config`。
 
 ## Claude Code / ccswitch
 
@@ -62,7 +91,7 @@ curl http://127.0.0.1:8080/healthz
 ```json
 {
   "env": {
-    "ANTHROPIC_AUTH_TOKEN": "sk-xxxx",
+    "ANTHROPIC_AUTH_TOKEN": "sk-xxxx-or-proxy-token",
     "ANTHROPIC_BASE_URL": "http://your-server:8080",
     "ANTHROPIC_DEFAULT_OPUS_MODEL": "umans-glm-5.2",
     "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME": "GLM 5.2",
@@ -87,25 +116,38 @@ curl http://127.0.0.1:8080/healthz
 
 说明：
 
-- `CLAUDE_CODE_AUTO_COMPACT_WINDOW=405504` 是 GLM 5.2 上下文窗口。
-- `CLAUDE_CODE_MAX_OUTPUT_TOKENS=131071` 是输出上限，不是上下文窗口。
+- 未配置托管 key 时，`ANTHROPIC_AUTH_TOKEN` 应填写真实上游 API key。
+- 配置托管 key 后必须设置 `proxyAccessToken`；`ANTHROPIC_AUTH_TOKEN` 应填写该代理访问令牌。
+- 配置托管 key 但 `proxyAccessToken` 为空时，代理请求会返回 401，不会使用托管 key 池。
 - `ENABLE_TOOL_SEARCH=false` 复刻 Umans CLI。Umans server-side search 由 `X-Umans-Websearch-Provider` 控制。
-- 同 key 并发由网关限制，默认 `4`；不同 key 独立排队。
+- 同 key 并发默认 `4`；托管 key 可独立设置并发上限。
+- 并发满载时请求先等待 `keyQueueTimeout`，默认 `50s`，超时后才返回 429 或从粘性 key 切换到其他 key。
 - `umans-glm-5.2[1m]` 这类 Claude Code 时长后缀会由网关清洗成基础模型 ID 再转发。
 
 ## 配置
 
+示例文件：
+
 ```text
-UMANS_GATEWAY_LISTEN=0.0.0.0:8080
-UMANS_UPSTREAM_BASE_URL=https://api.code.umans.ai
-UMANS_SEARCH_MODE=exa           # exa | native | auto | none
-UMANS_BUDGET_POLICY=error       # error | clamp-visible
-UMANS_KEY_CONCURRENCY_LIMIT=4
-UMANS_KEY_QUEUE_TIMEOUT=10m
-UMANS_UPSTREAM_RETRY_MAX=2
-UMANS_RETRY_429=false
-UMANS_UPSTREAM_RETRY_BASE_DELAY=2s
-UMANS_UPSTREAM_RETRY_MAX_DELAY=5s
-UMANS_SCHEMA_COMPAT=true
-UMANS_CATALOG_TTL=10m
+config/config.example.json
+config/key.example.json
 ```
+
+`config/config.json` 中的主要字段：
+
+```json
+{
+  "listen": "0.0.0.0:8080",
+  "upstreamBaseURL": "https://api.code.umans.ai",
+  "adminPassword": "change-me",
+  "proxyAccessToken": "",
+  "keyConcurrencyLimit": 4,
+  "keyQueueTimeout": "50s",
+  "stickySession": true,
+  "stickySessionTTL": "10s",
+  "searchMode": "exa",
+  "budgetPolicy": "error"
+}
+```
+
+完整中文说明可在管理页面的全局配置表单中查看。

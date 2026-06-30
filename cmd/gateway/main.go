@@ -14,12 +14,14 @@ import (
 )
 
 func main() {
-	cfg := gateway.ConfigFromEnv()
-	if err := cfg.Validate(); err != nil {
-		log.Fatalf("invalid config: %v", err)
+	store, err := gateway.NewRuntimeStore(gateway.ConfigDirFromEnv())
+	if err != nil {
+		log.Fatalf("init config store: %v", err)
 	}
+	defer store.Close()
+	cfg := store.Config()
 
-	svc, err := gateway.New(cfg)
+	svc, err := gateway.NewWithStore(store)
 	if err != nil {
 		log.Fatalf("init gateway: %v", err)
 	}

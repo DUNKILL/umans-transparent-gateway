@@ -21,6 +21,19 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/admin/package-lock.json
+
+      - name: Build admin UI
+        working-directory: web/admin
+        run: |
+          npm ci
+          npm run build
+
       - name: Check formatting
         run: test -z "$(gofmt -l .)"
 

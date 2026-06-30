@@ -1,0 +1,11 @@
+{
+  "keys": [
+    {
+      "id": "key_example",
+      "name": "示例 key",
+      "key": "sk-xxxx",
+      "enabled": false,
+      "concurrencyLimit": 4
+    }
+  ]
+}

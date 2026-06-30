@@ -3,6 +3,8 @@
 # Local environment and secrets
 .env
 *.env
+config/config.json
+config/key.json
 test/
 logs/
 error-events/
@@ -13,6 +15,9 @@ faults/
 # Local build/cache output
 .gocache/
 .gomodcache/
+.npm-cache/
+node_modules/
+web/admin/node_modules/
 dist/
 dist-new/
 dist-new-clean/
@@ -30,5 +35,6 @@ umans_static_audit_with_codex_records_*.sha256
 UMANS_AUDIT_BUNDLE_README.md
 
 # Binaries
+/gateway
 umans-gateway
 umans-gateway-*

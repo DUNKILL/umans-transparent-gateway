@@ -12,7 +12,8 @@ import (
 const retryDecisionBodyLimit = 1024 * 1024
 
 func (s *Service) doUpstreamWithRetry(ctx context.Context, build func(context.Context) (*http.Request, error)) (*http.Response, int, error) {
-	attempts := s.cfg.UpstreamRetryMax + 1
+	cfg := s.currentConfig()
+	attempts := cfg.UpstreamRetryMax + 1
 	if attempts < 1 {
 		attempts = 1
 	}
@@ -39,7 +40,7 @@ func (s *Service) doUpstreamWithRetry(ctx context.Context, build func(context.Co
 		if readErr != nil {
 			return resp, attempt + 1, nil
 		}
-		if attempt+1 < attempts && shouldRetryUpstream(resp.StatusCode, body, s.cfg.Retry429) {
+		if attempt+1 < attempts && shouldRetryUpstream(resp.StatusCode, body, s.currentConfig().Retry429) {
 			resp.Body.Close()
 			if waitRetry(ctx, s.retryDelay(attempt)) {
 				continue
@@ -86,15 +87,16 @@ func retryableStatus(status int) bool {
 }
 
 func (s *Service) retryDelay(attempt int) time.Duration {
-	delay := s.cfg.UpstreamRetryBase
+	cfg := s.currentConfig()
+	delay := cfg.UpstreamRetryBase
 	for i := 0; i < attempt; i++ {
 		delay *= 2
-		if delay >= s.cfg.UpstreamRetryCap {
-			return s.cfg.UpstreamRetryCap
+		if delay >= cfg.UpstreamRetryCap {
+			return cfg.UpstreamRetryCap
 		}
 	}
-	if delay > s.cfg.UpstreamRetryCap {
-		return s.cfg.UpstreamRetryCap
+	if delay > cfg.UpstreamRetryCap {
+		return cfg.UpstreamRetryCap
 	}
 	return delay
 }

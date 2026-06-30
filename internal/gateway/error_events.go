@@ -55,6 +55,21 @@ func (l *ErrorRecorder) Record(kind string, statusCode int, latency time.Duratio
 	_, _ = f.Write(append(line, '\n'))
 }
 
+func (l *ErrorRecorder) Configure(cfg Config) error {
+	if l == nil {
+		return nil
+	}
+	if err := os.MkdirAll(cfg.ErrorEventDir, 0o700); err != nil {
+		return err
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.dir = cfg.ErrorEventDir
+	l.maxAge = cfg.ErrorEventMaxAge
+	l.maxSize = cfg.ErrorEventMaxSize
+	return nil
+}
+
 func (l *ErrorRecorder) Cleanup() error {
 	if l == nil {
 		return nil

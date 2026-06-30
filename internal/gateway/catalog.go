@@ -30,32 +30,29 @@ type Catalog struct {
 
 type CatalogService struct {
 	client   *http.Client
-	baseURL  string
-	ttl      time.Duration
 	recorder *ErrorRecorder
 	mu       sync.Mutex
 	byKey    map[string]Catalog
 }
 
-func NewCatalogService(client *http.Client, baseURL string, ttl time.Duration, recorder *ErrorRecorder) *CatalogService {
+func NewCatalogService(client *http.Client, recorder *ErrorRecorder) *CatalogService {
 	return &CatalogService{
 		client:   client,
-		baseURL:  baseURL,
-		ttl:      ttl,
 		recorder: recorder,
 		byKey:    map[string]Catalog{},
 	}
 }
 
-func (s *CatalogService) Get(ctx context.Context, key string) (Catalog, bool, error) {
+func (s *CatalogService) Get(ctx context.Context, key, baseURL string, ttl time.Duration) (Catalog, bool, error) {
+	cacheKey := baseURL + "\x00" + key
 	s.mu.Lock()
-	if c, ok := s.byKey[key]; ok && time.Since(c.Fetched) < s.ttl {
+	if c, ok := s.byKey[cacheKey]; ok && time.Since(c.Fetched) < ttl {
 		s.mu.Unlock()
 		return c, true, nil
 	}
 	s.mu.Unlock()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, joinURL(s.baseURL, "/v1/models/info"), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, joinURL(baseURL, "/v1/models/info"), nil)
 	if err != nil {
 		return Catalog{}, false, err
 	}
@@ -80,7 +77,7 @@ func (s *CatalogService) Get(ctx context.Context, key string) (Catalog, bool, er
 	cat := ParseCatalog(raw)
 	cat.Fetched = time.Now()
 	s.mu.Lock()
-	s.byKey[key] = cat
+	s.byKey[cacheKey] = cat
 	s.mu.Unlock()
 	return cat, false, nil
 }

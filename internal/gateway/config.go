@@ -45,6 +45,10 @@ type Config struct {
 	ErrorEventDir     string
 	ErrorEventMaxAge  time.Duration
 	ErrorEventMaxSize int64
+	AdminPassword     string
+	ProxyAccessToken  string
+	StickySession     bool
+	StickySessionTTL  time.Duration
 }
 
 func DefaultConfig() Config {
@@ -56,7 +60,7 @@ func DefaultConfig() Config {
 		SonnetModel:       "umans-coder",
 		HaikuModel:        "umans-flash",
 		KeyConcurrency:    4,
-		KeyQueueTimeout:   10 * time.Minute,
+		KeyQueueTimeout:   50 * time.Second,
 		UpstreamRetryMax:  2,
 		Retry429:          false,
 		UpstreamRetryBase: 2 * time.Second,
@@ -68,6 +72,10 @@ func DefaultConfig() Config {
 		ErrorEventDir:     "error-events",
 		ErrorEventMaxAge:  24 * time.Hour,
 		ErrorEventMaxSize: 5 * 1024 * 1024,
+		AdminPassword:     "change-me",
+		ProxyAccessToken:  "",
+		StickySession:     true,
+		StickySessionTTL:  10 * time.Second,
 	}
 }
 
@@ -92,6 +100,10 @@ func ConfigFromEnv() Config {
 	cfg.CatalogTTL = envDuration("UMANS_CATALOG_TTL", cfg.CatalogTTL)
 	cfg.ErrorEventMaxAge = envDuration("UMANS_ERROR_EVENT_MAX_AGE", cfg.ErrorEventMaxAge)
 	cfg.ErrorEventMaxSize = envBytes("UMANS_ERROR_EVENT_MAX_SIZE", cfg.ErrorEventMaxSize)
+	cfg.AdminPassword = envString("UMANS_ADMIN_PASSWORD", cfg.AdminPassword)
+	cfg.ProxyAccessToken = envString("UMANS_PROXY_ACCESS_TOKEN", cfg.ProxyAccessToken)
+	cfg.StickySession = envBool("UMANS_STICKY_SESSION", cfg.StickySession)
+	cfg.StickySessionTTL = envDuration("UMANS_STICKY_SESSION_TTL", cfg.StickySessionTTL)
 	return cfg
 }
 
@@ -130,6 +142,12 @@ func (c Config) Validate() error {
 	}
 	if c.ErrorEventMaxAge <= 0 || c.ErrorEventMaxSize <= 0 {
 		return errors.New("error event limits must be positive")
+	}
+	if strings.TrimSpace(c.AdminPassword) == "" {
+		return errors.New("admin password must not be empty")
+	}
+	if c.StickySessionTTL <= 0 {
+		return errors.New("sticky session ttl must be positive")
 	}
 	return nil
 }

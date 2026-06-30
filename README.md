@@ -3,11 +3,11 @@
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![API](https://img.shields.io/badge/API-Anthropic%20%7C%20OpenAI-blue)](#api-surface)
-[![Keys](https://img.shields.io/badge/API%20keys-passthrough%20only-green)](#security-boundary)
+[![Keys](https://img.shields.io/badge/API%20keys-passthrough%20or%20managed-green)](#security-boundary)
 
 Self-hosted transparent gateway for Umans-compatible coding model APIs.
 
-It lets you point Claude Code, OpenAI SDK clients, ccswitch, or other tools at a server you control, while preserving the visible behavior exposed by the Umans CLI: compatible API paths, server-side search header forwarding, raw image/tool payload passthrough, model suffix normalization, per-key concurrency protection, and short retries for transient upstream failures.
+It lets you point Claude Code, OpenAI SDK clients, ccswitch, or other tools at a server you control, while preserving the visible behavior exposed by the Umans CLI: compatible API paths, server-side search header forwarding, raw image/tool payload passthrough, model suffix normalization, managed-key load balancing, per-key concurrency protection, and short retries for transient upstream failures.
 
 > Copyright ©️生🐟
 
@@ -41,7 +41,7 @@ This project is only a convenience gateway for self-hosted API compatibility. It
 The Umans CLI is useful, but some users do not want to run external installer or launcher scripts on their primary machine. This gateway moves the integration point to a server-side Go service:
 
 - clients call standard-compatible HTTP APIs;
-- user API keys are passed through per request;
+- user API keys can be passed through per request, or upstream keys can be managed server-side in `config/key.json`;
 - the gateway does not implement login or key acquisition;
 - local machines do not need to run the Umans CLI.
 
@@ -54,9 +54,12 @@ The Umans CLI is useful, but some users do not want to run external installer or
 - **Model catalog passthrough**: `GET /v1/models`, `GET /v1/models/info`
 - **SSE streaming**: preserved for Messages and Chat Completions
 - **WebSocket bridge**: `GET /ws`
+- **Embedded admin UI**: `GET /admin/` with password-protected management APIs
+- **Managed upstream key pool**: add/delete keys in `config/key.json`, with per-key concurrency limits
+- **Sticky sessions and load balancing**: 10s sticky window by default; when the sticky key is full, the gateway waits for the configured queue timeout before switching; otherwise it prefers keys with lower active concurrency
 - **Image/tool/reasoning payload preservation**: unknown fields and image blocks are forwarded
 - **Server-side search header forwarding**: `X-Umans-Websearch-Provider`
-- **Per-key concurrency queue**: default 4 active requests per API key
+- **Per-key concurrency queue**: default 4 active requests per API key and 50s queue timeout
 - **Transient upstream retry**: default 2 retries for temporary unavailable, `5xx`, `502`, `503`, `504`, and `529`; `429` retry is opt-in
 - **Claude Code model suffix cleanup**: `umans-glm-5.2[1m]` is forwarded as `umans-glm-5.2`
 - **JSON Schema compatibility**: optional old tuple-style `items: [...]` cleanup for strict upstream validators
@@ -72,6 +75,14 @@ Health check:
 ```bash
 curl http://127.0.0.1:8080/healthz
 ```
+
+Admin UI:
+
+```text
+http://127.0.0.1:8080/admin/
+```
+
+Default admin password is `change-me`; change it in `config/config.json` or the admin UI before exposing the service.
 
 Example Anthropic Messages call:
 
@@ -100,20 +111,26 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 
 ### Configuration
 
-| Variable | Default | Description |
+Runtime configuration now lives in `config/config.json`; managed upstream keys live in `config/key.json`. If either file is missing, the gateway creates it on startup. Most fields are hot-reloaded for new requests; `listen` is written to the config file but still requires a process restart to re-bind the server socket.
+
+| JSON field | Default | Description |
 | --- | --- | --- |
-| `UMANS_GATEWAY_LISTEN` | `0.0.0.0:8080` | HTTP listen address |
-| `UMANS_UPSTREAM_BASE_URL` | `https://api.code.umans.ai` | Upstream Umans-compatible API base URL |
-| `UMANS_SEARCH_MODE` | `exa` | `exa`, `native`, `auto`, or `none`; forced modes inject `X-Umans-Websearch-Provider` upstream |
-| `UMANS_BUDGET_POLICY` | `error` | `error` or `clamp-visible` for output token budget handling |
-| `UMANS_KEY_CONCURRENCY_LIMIT` | `4` | Active request limit per API key |
-| `UMANS_KEY_QUEUE_TIMEOUT` | `10m` | Max time a request waits for a per-key slot |
-| `UMANS_UPSTREAM_RETRY_MAX` | `2` | Retry count after the first upstream attempt |
-| `UMANS_RETRY_429` | `false` | Opt in to retrying upstream `429`; keep `false` to avoid amplifying concurrency limit hits |
-| `UMANS_UPSTREAM_RETRY_BASE_DELAY` | `2s` | Initial retry delay |
-| `UMANS_UPSTREAM_RETRY_MAX_DELAY` | `5s` | Maximum retry delay |
-| `UMANS_SCHEMA_COMPAT` | `true` | Convert old tuple-style JSON Schema `items: [...]` into `prefixItems` for strict validators |
-| `UMANS_CATALOG_TTL` | `10m` | Model catalog cache TTL |
+| `listen` | `0.0.0.0:8080` | HTTP listen address; restart required after changing |
+| `upstreamBaseURL` | `https://api.code.umans.ai` | Upstream Umans-compatible API base URL |
+| `adminPassword` | `change-me` | Password for `/admin/`; change this before exposing the service |
+| `proxyAccessToken` | empty | Required client token when managed keys are enabled; requests must send this value via `Authorization` or `x-api-key` |
+| `keyConcurrencyLimit` | `4` | Default active request limit per key; individual managed keys may override it |
+| `keyQueueTimeout` | `50s` | Max time a request waits for a key slot; sticky-session waiting uses this same value |
+| `stickySession` | `true` | Reuse the previous managed key for the same client token within the sticky window |
+| `stickySessionTTL` | `10s` | Sticky session window |
+| `searchMode` | `exa` | `exa`, `native`, `auto`, or `none`; forced modes inject `X-Umans-Websearch-Provider` upstream |
+| `budgetPolicy` | `error` | `error` or `clamp-visible` for output token budget handling |
+| `upstreamRetryMax` | `2` | Retry count after the first upstream attempt |
+| `retry429` | `false` | Opt in to retrying upstream `429`; keep `false` to avoid amplifying concurrency limit hits |
+| `upstreamRetryBaseDelay` | `2s` | Initial retry delay |
+| `upstreamRetryMaxDelay` | `5s` | Maximum retry delay |
+| `schemaCompat` | `true` | Convert old tuple-style JSON Schema `items: [...]` into `prefixItems` for strict validators |
+| `catalogTTL` | `10m` | Model catalog cache TTL |
 
 ### Claude Code / ccswitch
 
@@ -157,6 +174,7 @@ GET  /v1/models/info
 GET  /v1/usage
 GET  /healthz
 GET  /ws
+GET  /admin/
 ```
 
 `/v1/messages` and `/v1/chat/completions` are raw proxy paths. `/v1/responses` is a compatibility layer that converts OpenAI Responses-shaped input to Chat Completions upstream and converts the response back to a Responses-shaped object.
@@ -164,8 +182,10 @@ GET  /ws
 ### Security Boundary
 
 - API keys are accepted per request via `Authorization: Bearer <key>` or `x-api-key: <key>`.
-- API keys are forwarded to the upstream service and are not persisted by this gateway.
+- Without managed keys, the client-provided key is forwarded to the upstream service and is not persisted by this gateway.
+- With managed keys, upstream keys are stored locally in `config/key.json`; protect this file with filesystem permissions and set a strong `adminPassword`.
 - Per-key concurrency uses an in-memory HMAC bucket, not the plaintext key.
+- The admin page at `/admin/` is protected by `adminPassword`; static assets are public, management APIs are not.
 - The gateway does not run Umans installer scripts.
 - The gateway does not write `~/.umans`, `~/.claude`, or `/usr/local/bin`.
 - Image recognition, server-side search, and compaction are not reimplemented locally; the gateway forwards the request semantics exposed by the Umans-compatible upstream.
@@ -195,7 +215,7 @@ This project is an independent transparent gateway implementation. It is not aff
 
 ### 项目定位
 
-Umans CLI 本身能用，但如果你不想在主力机器上运行外部 installer 或 launcher 脚本，可以把接入点移到服务器侧：客户端只调用标准兼容 API，API key 每次请求透传，本机不需要运行 Umans CLI。
+Umans CLI 本身能用，但如果你不想在主力机器上运行外部 installer 或 launcher 脚本，可以把接入点移到服务器侧：客户端只调用标准兼容 API，API key 可以每次请求透传，也可以由服务器侧 `config/key.json` 托管，本机不需要运行 Umans CLI。
 
 ### 功能
 
@@ -206,9 +226,12 @@ Umans CLI 本身能用，但如果你不想在主力机器上运行外部 instal
 - **模型目录透传**：`GET /v1/models`、`GET /v1/models/info`
 - **SSE 流式输出**：保留 Messages 和 Chat Completions 流式行为
 - **WebSocket bridge**：`GET /ws`
+- **内置管理页面**：`GET /admin/`，管理 API 需要访问密码
+- **托管上游 key 池**：在 `config/key.json` 中添加/删除 key，并支持每个 key 独立并发上限
+- **粘性会话与负载均衡**：默认 10 秒粘性窗口；粘性 key 满载时先等待配置的排队时间，超时后再切换；普通选择优先使用当前活跃并发更低的 key
 - **图片、工具、reasoning 字段保留**：未知字段和图片块原样转发
 - **服务器搜索 header 转发**：`X-Umans-Websearch-Provider`
-- **按 key 并发队列**：默认每个 API key 同时 4 个请求
+- **按 key 并发队列**：默认每个 API key 同时 4 个请求，默认排队等待 50 秒
 - **上游瞬断自动重试**：默认对临时不可用、`5xx`、`502`、`503`、`504`、`529` 重试 2 次；`429` 需显式开启
 - **Claude Code 模型后缀清洗**：`umans-glm-5.2[1m]` 会按 `umans-glm-5.2` 转发
 - **JSON Schema 兼容清洗**：可选地把旧 tuple 写法 `items: [...]` 转成严格校验器接受的 `prefixItems`
@@ -224,6 +247,14 @@ go run ./cmd/gateway
 ```bash
 curl http://127.0.0.1:8080/healthz
 ```
+
+管理页面：
+
+```text
+http://127.0.0.1:8080/admin/
+```
+
+默认管理密码是 `change-me`，对外暴露前请在 `config/config.json` 或管理页面中修改。
 
 Anthropic Messages 示例：
 
@@ -252,20 +283,26 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 
 ### 配置
 
-| 变量 | 默认值 | 说明 |
+运行配置现在位于 `config/config.json`；托管上游 key 位于 `config/key.json`。如果文件不存在，网关启动时会自动创建。大部分字段会对新请求热重载；`listen` 会写入配置文件，但变更监听端口仍需要重启进程。
+
+| JSON 字段 | 默认值 | 说明 |
 | --- | --- | --- |
-| `UMANS_GATEWAY_LISTEN` | `0.0.0.0:8080` | HTTP 监听地址 |
-| `UMANS_UPSTREAM_BASE_URL` | `https://api.code.umans.ai` | Umans-compatible 上游 API base URL |
-| `UMANS_SEARCH_MODE` | `exa` | `exa`、`native`、`auto` 或 `none`；强制模式会向上游注入 `X-Umans-Websearch-Provider` |
-| `UMANS_BUDGET_POLICY` | `error` | 输出 token 预算策略：`error` 或 `clamp-visible` |
-| `UMANS_KEY_CONCURRENCY_LIMIT` | `4` | 每个 API key 的同时活跃请求上限 |
-| `UMANS_KEY_QUEUE_TIMEOUT` | `10m` | 同 key 请求排队等待上限 |
-| `UMANS_UPSTREAM_RETRY_MAX` | `2` | 首次上游请求失败后的重试次数 |
-| `UMANS_RETRY_429` | `false` | 是否重试上游 `429`；保持 `false` 可避免放大并发限流命中 |
-| `UMANS_UPSTREAM_RETRY_BASE_DELAY` | `2s` | 初始重试等待时间 |
-| `UMANS_UPSTREAM_RETRY_MAX_DELAY` | `5s` | 最大重试等待时间 |
-| `UMANS_SCHEMA_COMPAT` | `true` | 将旧 tuple-style JSON Schema `items: [...]` 转成严格校验器接受的 `prefixItems` |
-| `UMANS_CATALOG_TTL` | `10m` | 模型目录缓存时间 |
+| `listen` | `0.0.0.0:8080` | HTTP 监听地址；修改后需要重启才会重新绑定端口 |
+| `upstreamBaseURL` | `https://api.code.umans.ai` | Umans-compatible 上游 API base URL |
+| `adminPassword` | `change-me` | `/admin/` 管理页面访问密码；对外暴露前务必修改 |
+| `proxyAccessToken` | 空 | 托管 key 池启用时必须设置；客户端请求需通过 `Authorization` 或 `x-api-key` 发送这个值 |
+| `keyConcurrencyLimit` | `4` | 每个 key 的默认活跃请求上限；单个托管 key 可覆盖 |
+| `keyQueueTimeout` | `50s` | 并发满载时请求等待 key 槽的最长时间；粘性会话等待也使用同一个值 |
+| `stickySession` | `true` | 同一客户端 token 在粘性窗口内优先复用上一次选中的托管 key |
+| `stickySessionTTL` | `10s` | 粘性会话窗口 |
+| `searchMode` | `exa` | `exa`、`native`、`auto` 或 `none`；强制模式会向上游注入 `X-Umans-Websearch-Provider` |
+| `budgetPolicy` | `error` | 输出 token 预算策略：`error` 或 `clamp-visible` |
+| `upstreamRetryMax` | `2` | 首次上游请求失败后的重试次数 |
+| `retry429` | `false` | 是否重试上游 `429`；保持 `false` 可避免放大并发限流命中 |
+| `upstreamRetryBaseDelay` | `2s` | 初始重试等待时间 |
+| `upstreamRetryMaxDelay` | `5s` | 最大重试等待时间 |
+| `schemaCompat` | `true` | 将旧 tuple-style JSON Schema `items: [...]` 转成严格校验器接受的 `prefixItems` |
+| `catalogTTL` | `10m` | 模型目录缓存时间 |
 
 ### Claude Code / ccswitch
 
@@ -309,6 +346,7 @@ GET  /v1/models/info
 GET  /v1/usage
 GET  /healthz
 GET  /ws
+GET  /admin/
 ```
 
 `/v1/messages` 和 `/v1/chat/completions` 是 raw proxy，保留未知字段、工具、thinking/reasoning、图片和 SSE。`/v1/responses` 是兼容层：对外接受 OpenAI Responses 风格，内部转换到 Chat Completions，再转回 Responses 风格。
@@ -316,8 +354,10 @@ GET  /ws
 ### 安全边界
 
 - API key 通过 `Authorization: Bearer <key>` 或 `x-api-key: <key>` 每请求传入。
-- API key 只转发给上游，不由本服务持久化保存。
+- 未启用托管 key 时，客户端传入的 API key 只转发给上游，不由本服务持久化保存。
+- 启用托管 key 时，上游 key 会保存在本机 `config/key.json`；请保护文件权限，并设置强管理密码。
 - 同 key 并发控制使用内存 HMAC bucket，不使用明文 key 做桶 ID。
+- `/admin/` 管理页面由 `adminPassword` 保护；静态资源可访问，管理 API 不可匿名调用。
 - 不运行 Umans installer 脚本。
 - 不写 `~/.umans`、`~/.claude` 或 `/usr/local/bin`。
 - 图片识别、服务器搜索和 compaction 不在本地重做；网关只转发 Umans-compatible 上游暴露的请求语义。

@@ -7,7 +7,6 @@ Wants=network-online.target
 Type=simple
 User=umans-gateway
 Group=umans-gateway
-EnvironmentFile=-/etc/umans-gateway/env
 ExecStart=/usr/local/bin/umans-gateway
 Restart=on-failure
 RestartSec=3

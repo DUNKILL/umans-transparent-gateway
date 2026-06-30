@@ -18,17 +18,16 @@ func (s *Service) handleResponses(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
-	auth, err := ExtractAuth(r.Header)
+	_, lease, err := s.acquireOutboundKey(r.Context(), r)
 	if err != nil {
-		writeAuthError(w, err)
+		if isAuthError(err) {
+			writeAuthError(w, err)
+		} else {
+			s.writeConcurrencyError(w, start, err)
+		}
 		return
 	}
-	release, err := s.acquireKeySlot(r.Context(), auth.Key)
-	if err != nil {
-		s.writeConcurrencyError(w, start, err)
-		return
-	}
-	defer release()
+	defer lease.Release()
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -36,7 +35,8 @@ func (s *Service) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer r.Body.Close()
-	body = normalizeModelInJSON(body)
+	cfg := s.currentConfig()
+	body = normalizeRequestJSON(body, cfg.SchemaCompat)
 	chatBody, err := responseToChatBody(body)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "responses_convert_failed", err.Error())
@@ -44,12 +44,13 @@ func (s *Service) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp, attempts, err := s.doUpstreamWithRetry(r.Context(), func(ctx context.Context) (*http.Request, error) {
-		upReq, err := http.NewRequestWithContext(ctx, http.MethodPost, joinURL(s.cfg.UpstreamBaseURL, "/v1/chat/completions"), bytes.NewReader(chatBody))
+		cfg := s.currentConfig()
+		upReq, err := http.NewRequestWithContext(ctx, http.MethodPost, joinURL(cfg.UpstreamBaseURL, "/v1/chat/completions"), bytes.NewReader(chatBody))
 		if err != nil {
 			return nil, err
 		}
 		copyHeaders(upReq.Header, r.Header)
-		applyOutboundAuth(upReq.Header, auth.Key, authOpenAI)
+		applyOutboundAuth(upReq.Header, lease.Key, authOpenAI)
 		s.applySearchHeader(upReq.Header, r.Header)
 		upReq.Header.Set("Content-Type", "application/json")
 		upReq.Header.Set("User-Agent", "umans-transparent-gateway/1")
