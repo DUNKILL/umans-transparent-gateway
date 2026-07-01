@@ -3,7 +3,9 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -11,7 +13,7 @@ import (
 
 const retryDecisionBodyLimit = 1024 * 1024
 
-func (s *Service) doUpstreamWithRetry(ctx context.Context, build func(context.Context) (*http.Request, error)) (*http.Response, int, error) {
+func (s *Service) doUpstreamWithRetry(ctx context.Context, build func(context.Context) (*http.Request, error), keyID, keyName string) (*http.Response, int, error) {
 	cfg := s.currentConfig()
 	attempts := cfg.UpstreamRetryMax + 1
 	if attempts < 1 {
@@ -26,8 +28,12 @@ func (s *Service) doUpstreamWithRetry(ctx context.Context, build func(context.Co
 		resp, err := s.client.Do(req)
 		if err != nil {
 			lastErr = err
-			if attempt+1 < attempts && waitRetry(ctx, s.retryDelay(attempt)) {
-				continue
+			if attempt+1 < attempts {
+				delay := s.retryDelay(attempt)
+				s.logRetry(ctx, keyID, keyName, attempt+1, attempts-1, 0, delay, err)
+				if waitRetry(ctx, delay) {
+					continue
+				}
 			}
 			return nil, attempt + 1, err
 		}
@@ -41,14 +47,34 @@ func (s *Service) doUpstreamWithRetry(ctx context.Context, build func(context.Co
 			return resp, attempt + 1, nil
 		}
 		if attempt+1 < attempts && shouldRetryUpstream(resp.StatusCode, body, s.currentConfig().Retry429) {
+			delay := s.retryDelay(attempt)
+			statusErr := fmt.Errorf("upstream_status_%d", resp.StatusCode)
+			s.logRetry(ctx, keyID, keyName, attempt+1, attempts-1, resp.StatusCode, delay, statusErr)
 			resp.Body.Close()
-			if waitRetry(ctx, s.retryDelay(attempt)) {
+			if waitRetry(ctx, delay) {
 				continue
 			}
 		}
 		return resp, attempt + 1, nil
 	}
 	return nil, attempts, lastErr
+}
+
+// logRetry emits a console warning and an error-event line for a single
+// upstream retry attempt. attemptNo is 1-indexed (the attempt that just
+// failed); maxRetries is cfg.UpstreamRetryMax.
+func (s *Service) logRetry(ctx context.Context, keyID, keyName string, attemptNo, maxRetries int, statusCode int, delay time.Duration, err error) {
+	logger.Warn("upstream retry triggered",
+		slog.String("keyID", keyID),
+		slog.String("keyName", keyName),
+		slog.Int("attempt", attemptNo),
+		slog.Int("maxRetries", maxRetries),
+		slog.Int("status", statusCode),
+		slog.Duration("backoff", delay),
+		slog.String("error", err.Error()),
+		slog.Bool("canceled", ctx.Err() != nil),
+	)
+	s.recordError("upstream_retry", statusCode, 0, err)
 }
 
 func readAndRestoreBody(resp *http.Response) ([]byte, error) {
@@ -111,3 +137,4 @@ func waitRetry(ctx context.Context, delay time.Duration) bool {
 		return false
 	}
 }
+

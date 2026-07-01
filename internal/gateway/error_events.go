@@ -125,7 +125,7 @@ func (l *ErrorRecorder) cleanupLocked(now time.Time) error {
 
 func normalizeEventKind(kind string) string {
 	switch kind {
-	case "reject", "upstream_error", "upstream_status", "stream_error", "conversion_error", "catalog_error":
+	case "reject", "upstream_error", "upstream_status", "upstream_retry", "stream_error", "conversion_error", "catalog_error":
 		return kind
 	default:
 		return "gateway_error"

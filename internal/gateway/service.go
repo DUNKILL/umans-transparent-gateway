@@ -251,10 +251,10 @@ func (s *Service) proxyJSON(w http.ResponseWriter, r *http.Request, opts proxyOp
 			upReq.Header.Set("Content-Type", "application/json")
 		}
 		return upReq, nil
-	})
+	}, lease.KeyID, lease.KeyName)
 	if err != nil {
 		s.recordError("upstream_error", 0, time.Since(start), err)
-		s.recordKeyError(lease)
+		s.recordKeyError(lease, err)
 		writeError(w, http.StatusBadGateway, "upstream_request_failed", err.Error())
 		return
 	}
@@ -272,7 +272,7 @@ func (s *Service) proxyJSON(w http.ResponseWriter, r *http.Request, opts proxyOp
 	}
 	if errForLog != nil {
 		s.recordError("upstream_status", resp.StatusCode, time.Since(start), errForLog)
-		s.recordKeyError(lease)
+		s.recordKeyError(lease, errForLog)
 	}
 }
 
@@ -401,10 +401,38 @@ func (s *Service) recordError(kind string, statusCode int, latency time.Duration
 	}
 }
 
-func (s *Service) recordKeyError(lease *KeyLease) {
-	if s.store != nil && lease != nil && lease.Managed {
-		s.store.RecordKeyError(lease.KeyID)
+// recordKeyError registers an upstream failure against a managed key's
+// error-count/backoff state, unless the failure was caused by the client
+// canceling the request (context.Canceled). Client cancellations are not
+// indicative of an upstream/key problem and must not push a healthy key into
+// backoff — otherwise users aborting a stream could starve routing.
+func (s *Service) recordKeyError(lease *KeyLease, err error) {
+	if s.store == nil || lease == nil || !lease.Managed {
+		return
 	}
+	if err != nil && isClientCancellation(err) {
+		return
+	}
+	s.store.RecordKeyError(lease.KeyID)
+}
+
+// isClientCancellation reports whether err is (or wraps) a client-side
+// cancellation: context.Canceled or the websocket/web write variants that
+// surface when the downstream connection drops mid-request.
+func isClientCancellation(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	// http.ResponseWriter.Write on a closed connection, and various wrappers
+	// around client disconnects that don't unwrap to context.Canceled.
+	return strings.Contains(msg, "context canceled") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "client disconnected")
 }
 
 func (s *Service) acquireKeySlot(ctx context.Context, key string) (func(), error) {
@@ -690,15 +718,15 @@ func (s *Service) runWSRequest(ctx context.Context, c *websocket.Conn, parent *h
 		s.applySearchHeader(upReq.Header, h)
 		upReq.Header.Set("Content-Type", "application/json")
 		return upReq, nil
-	})
+	}, lease.KeyID, lease.KeyName)
 	if err != nil {
-		s.recordKeyError(lease)
+		s.recordKeyError(lease, err)
 		writeWS(ctx, c, map[string]any{"type": "error", "id": req.ID, "error": map[string]any{"type": "upstream_request_failed", "message": redactSecret(err.Error(), lease.Key)}})
 		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		s.recordKeyError(lease)
+		s.recordKeyError(lease, fmt.Errorf("upstream_status_%d", resp.StatusCode))
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		writeWS(ctx, c, map[string]any{"type": "error", "id": req.ID, "status": resp.StatusCode, "error": map[string]any{"type": "upstream_error", "message": redactSecret(string(body), lease.Key)}})
 		return
@@ -713,7 +741,7 @@ func (s *Service) runWSRequest(ctx context.Context, c *websocket.Conn, parent *h
 		writeWS(ctx, c, map[string]any{"type": "event", "id": req.ID, "event": line})
 	}
 	if err := scanner.Err(); err != nil {
-		s.recordKeyError(lease)
+		s.recordKeyError(lease, err)
 		writeWS(ctx, c, map[string]any{"type": "error", "id": req.ID, "error": map[string]any{"type": "stream_error", "message": err.Error()}})
 		return
 	}

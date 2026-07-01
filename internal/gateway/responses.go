@@ -58,10 +58,10 @@ func (s *Service) handleResponses(w http.ResponseWriter, r *http.Request) {
 		upReq.Header.Set("Content-Type", "application/json")
 		upReq.Header.Set("User-Agent", "umans-transparent-gateway/1")
 		return upReq, nil
-	})
+	}, lease.KeyID, lease.KeyName)
 	if err != nil {
 		s.recordError("upstream_error", 0, time.Since(start), err)
-		s.recordKeyError(lease)
+		s.recordKeyError(lease, err)
 		writeError(w, http.StatusBadGateway, "upstream_request_failed", err.Error())
 		return
 	}
@@ -73,8 +73,9 @@ func (s *Service) handleResponses(w http.ResponseWriter, r *http.Request) {
 		copyResponseHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
 		_, _ = streamCopy(w, resp.Body)
-		s.recordError("upstream_status", resp.StatusCode, time.Since(start), fmt.Errorf("upstream_status_%d", resp.StatusCode))
-		s.recordKeyError(lease)
+		statusErr := fmt.Errorf("upstream_status_%d", resp.StatusCode)
+		s.recordError("upstream_status", resp.StatusCode, time.Since(start), statusErr)
+		s.recordKeyError(lease, statusErr)
 		return
 	}
 	if bodyHasBool(body, "stream") {
@@ -84,7 +85,7 @@ func (s *Service) handleResponses(w http.ResponseWriter, r *http.Request) {
 		_, err := convertChatStreamToResponses(w, resp.Body)
 		if err != nil {
 			s.recordError("stream_error", 0, time.Since(start), err)
-			s.recordKeyError(lease)
+			s.recordKeyError(lease, err)
 		}
 		return
 	}
