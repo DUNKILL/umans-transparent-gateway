@@ -265,15 +265,45 @@ func (s *Service) proxyJSON(w http.ResponseWriter, r *http.Request, opts proxyOp
 
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
-	_, copyErr := streamCopy(w, resp.Body)
-	errForLog := copyErr
-	if resp.StatusCode >= 400 && errForLog == nil {
-		errForLog = fmt.Errorf("upstream_status_%d", resp.StatusCode)
-	}
-	if errForLog != nil {
+	if resp.StatusCode >= 400 {
+		// Read a truncated copy of the upstream error body for diagnostics
+		// before streaming it to the client. The original body is restored so
+		// streamCopy still delivers the full error to the caller. This only
+		// goes to the console logger (stderr), not the redacted error-events
+		// file, so it may contain request/response content.
+		bodySnip := captureUpstreamErrorBody(resp)
+		_, copyErr := streamCopy(w, resp.Body)
+		errForLog := copyErr
+		if errForLog == nil {
+			errForLog = fmt.Errorf("upstream_status_%d: %s", resp.StatusCode, bodySnip)
+		}
 		s.recordError("upstream_status", resp.StatusCode, time.Since(start), errForLog)
 		s.recordKeyError(lease, errForLog)
+		return
 	}
+	_, copyErr := streamCopy(w, resp.Body)
+	if copyErr != nil {
+		s.recordError("upstream_status", resp.StatusCode, time.Since(start), copyErr)
+		s.recordKeyError(lease, copyErr)
+	}
+}
+
+// upstreamErrorBodyCaptureLimit caps how much of an upstream error response is
+// logged to the console. Large error pages (HTML, debug dumps) would otherwise
+// flood the logs.
+const upstreamErrorBodyCaptureLimit = 4 * 1024
+
+// captureUpstreamErrorBody reads up to upstreamErrorBodyCaptureLimit bytes from
+// resp.Body and restores the body so downstream readers see the full content.
+func captureUpstreamErrorBody(resp *http.Response) string {
+	body, err := readAndRestoreBody(resp)
+	if err != nil {
+		return ""
+	}
+	if len(body) > upstreamErrorBodyCaptureLimit {
+		body = append(body[:upstreamErrorBodyCaptureLimit], []byte("...[truncated]")...)
+	}
+	return strings.TrimSpace(string(body))
 }
 
 func (s *Service) applyBudgetPolicy(ctx context.Context, key string, body []byte, field, altField string) ([]byte, string, error) {
@@ -726,8 +756,14 @@ func (s *Service) runWSRequest(ctx context.Context, c *websocket.Conn, parent *h
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		s.recordKeyError(lease, fmt.Errorf("upstream_status_%d", resp.StatusCode))
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		bodySnip := strings.TrimSpace(string(body))
+		if len(bodySnip) > upstreamErrorBodyCaptureLimit {
+			bodySnip = bodySnip[:upstreamErrorBodyCaptureLimit] + "...[truncated]"
+		}
+		statusErr := fmt.Errorf("upstream_status_%d: %s", resp.StatusCode, bodySnip)
+		s.recordError("upstream_status", resp.StatusCode, time.Since(start), statusErr)
+		s.recordKeyError(lease, statusErr)
 		writeWS(ctx, c, map[string]any{"type": "error", "id": req.ID, "status": resp.StatusCode, "error": map[string]any{"type": "upstream_error", "message": redactSecret(string(body), lease.Key)}})
 		return
 	}

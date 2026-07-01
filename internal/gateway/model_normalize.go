@@ -71,11 +71,21 @@ func normalizeJSONSchemaDraft(v any) bool {
 }
 
 func normalizeJSONSchemaDraftMap(m map[string]any) bool {
+	// Always recurse first so deeply-nested tuple schemas are still converted
+	// even when this map itself is not an array schema.
 	changed := false
 	for _, v := range m {
 		if normalizeJSONSchemaDraft(v) {
 			changed = true
 		}
+	}
+	// Only treat THIS map as a JSON-Schema array tuple when it declares
+	// "type":"array". Without this guard, ANY nested object whose field
+	// happens to be named "items" and hold an array would be rewritten: the
+	// array gets moved to "prefixItems" and "items" is clobbered to true,
+	// corrupting user payloads (e.g. tool inputs) and causing upstream 400s.
+	if stringValue(m["type"], "") != "array" {
+		return changed
 	}
 	items, ok := m["items"].([]any)
 	if !ok {
@@ -83,6 +93,7 @@ func normalizeJSONSchemaDraftMap(m map[string]any) bool {
 	}
 	if _, exists := m["prefixItems"]; !exists {
 		m["prefixItems"] = items
+		changed = true
 	}
 	if additional, exists := m["additionalItems"]; exists {
 		switch additional.(type) {
@@ -92,8 +103,10 @@ func normalizeJSONSchemaDraftMap(m map[string]any) bool {
 			m["items"] = true
 		}
 		delete(m, "additionalItems")
+		changed = true
 	} else {
 		m["items"] = true
+		changed = true
 	}
-	return true
+	return changed
 }

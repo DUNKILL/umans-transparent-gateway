@@ -70,10 +70,11 @@ func (s *Service) handleResponses(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Umans-Gateway-Retry-Attempts", fmt.Sprintf("%d", attempts-1))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		bodySnip := captureUpstreamErrorBody(resp)
 		copyResponseHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
 		_, _ = streamCopy(w, resp.Body)
-		statusErr := fmt.Errorf("upstream_status_%d", resp.StatusCode)
+		statusErr := fmt.Errorf("upstream_status_%d: %s", resp.StatusCode, bodySnip)
 		s.recordError("upstream_status", resp.StatusCode, time.Since(start), statusErr)
 		s.recordKeyError(lease, statusErr)
 		return

@@ -121,3 +121,62 @@ func TestNormalizeRequestJSONCanDisableSchemaCompat(t *testing.T) {
 		t.Fatalf("prefixItems should not be added when schema compat is disabled")
 	}
 }
+
+// TestNormalizeRequestJSONDoesNotCorruptNonSchemaItemsField is a regression
+// guard: a nested object whose field is named "items" and holds an array, but
+// is NOT a JSON-Schema array declaration (no type:array), must be left
+// untouched. Previously SchemaCompat rewrote every such field: it moved the
+// array to prefixItems and clobbered items to true, corrupting user payloads
+// (e.g. tool inputs) and producing upstream 400 errors.
+func TestNormalizeRequestJSONDoesNotCorruptNonSchemaItemsField(t *testing.T) {
+	in := []byte(`{"model":"umans-glm-5.2","messages":[{"role":"user","content":[{"type":"tool_use","name":"x","input":{"items":["a","b","c"]}}]}]}`)
+	out := normalizeRequestJSON(in, true)
+	var payload map[string]any
+	if err := json.Unmarshal(out, &payload); err != nil {
+		t.Fatal(err)
+	}
+	msgs := payload["messages"].([]any)
+	msg := msgs[0].(map[string]any)
+	content := msg["content"].([]any)
+	toolUse := content[0].(map[string]any)
+	input := toolUse["input"].(map[string]any)
+	items, ok := input["items"].([]any)
+	if !ok {
+		t.Fatalf("items was corrupted: %#v (type %T)", input["items"], input["items"])
+	}
+	if len(items) != 3 || items[0] != "a" {
+		t.Fatalf("items content changed: %#v", items)
+	}
+	if _, exists := input["prefixItems"]; exists {
+		t.Fatalf("prefixItems must not be added to a non-schema field: %#v", input)
+	}
+}
+
+// TestNormalizeRequestJSONStillConvertsDeeplyNestedTupleSchema ensures the
+// type:array guard did not break conversion of tuple schemas nested inside
+// tool input_schema (the original purpose of SchemaCompat).
+func TestNormalizeRequestJSONStillConvertsDeeplyNestedTupleSchema(t *testing.T) {
+	body := normalizeRequestJSON([]byte(`{
+	  "model":"umans-glm-5.2",
+	  "tools":[{"name":"plot","input_schema":{"type":"object","properties":{"coord":{"type":"array","items":[{"type":"number"},{"type":"number"}],"additionalItems":false}}}}]
+	}`), true)
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	tools := payload["tools"].([]any)
+	tool := tools[0].(map[string]any)
+	schema := tool["input_schema"].(map[string]any)
+	props := schema["properties"].(map[string]any)
+	coord := props["coord"].(map[string]any)
+	if got := coord["items"]; got != false {
+		t.Fatalf("items=%#v, want false (additionalItems:false)", got)
+	}
+	prefix, ok := coord["prefixItems"].([]any)
+	if !ok || len(prefix) != 2 {
+		t.Fatalf("prefixItems=%#v", coord["prefixItems"])
+	}
+	if _, exists := coord["additionalItems"]; exists {
+		t.Fatalf("additionalItems should be removed")
+	}
+}
