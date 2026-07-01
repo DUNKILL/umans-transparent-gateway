@@ -467,7 +467,7 @@ function renderApp() {
             <button data-theme="dark" title="深色" class="${themeMode === 'dark' ? 'active' : ''}">${icon('moon')}</button>
           </div>
           <button class="logout" id="logout">${icon('log-out')} 退出登录</button>
-          <span class="build">UMANS · transparent gateway</span>
+          <span class="build">Version: 1.1</span>
         </div>
       </aside>
       <section class="main">
@@ -539,7 +539,6 @@ function renderKeysPage() {
 
 function renderSettingsPage() {
   return `
-    <section class="telemetry">${renderTelemetry()}</section>
     <form class="panel" id="config-form">
       <div class="panel-head">
         <div>
@@ -773,7 +772,7 @@ function renderKeyBackoff(key: KeyStatus) {
     return '<span class="pill"><span class="dot"></span>正常</span>';
   }
   const seconds = Math.ceil(left / 1000);
-  return `<span class="pill warn"><span class="dot"></span>退避 ${seconds}s</span>`;
+  return `<span class="pill warn"><span class="dot"></span>退避 ${seconds}s</span><button class="ghost reset-backoff" data-id="${escapeAttr(key.id)}" title="结束退避">${icon('check-circle-2')}恢复</button>`;
 }
 
 function renderKeyLoad(key: KeyStatus) {
@@ -883,6 +882,21 @@ function bindAppEvents() {
       const key = status?.keys.find((item) => item.id === button.dataset.id);
       if (!key) return;
       openDeleteModal(key);
+    });
+  });
+  document.querySelectorAll<HTMLButtonElement>('.reset-backoff').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const id = button.dataset.id || '';
+      if (!id) return;
+      try {
+        await api(`/admin/api/keys/${encodeURIComponent(id)}/reset_backoff`, { method: 'POST' });
+        await refreshStatus();
+        setMessage('已手动结束退避', 'success');
+        renderApp();
+      } catch (error) {
+        setMessage(humanError(error), 'error');
+        renderApp();
+      }
     });
   });
   // modal interactions

@@ -873,6 +873,23 @@ td .key-prev {
   font-size: 12px;
 }
 
+.key-backoff-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.key-backoff-cell .reset-backoff {
+  min-height: 24px;
+  padding: 0 8px;
+  font-size: 11px;
+  color: var(--accent);
+}
+.key-backoff-cell .reset-backoff svg {
+  width: 12px;
+  height: 12px;
+}
+
 .empty-state {
   margin: 0;
   padding: 40px 22px;
@@ -1163,7 +1180,7 @@ td .key-prev {
   grid-template-columns: 1fr 1fr;
   gap: 12px;
 }
-.modal-field.inline {
+.modal-field label.inline {
   display: flex;
   align-items: center;
   gap: 9px;
@@ -1172,10 +1189,12 @@ td .key-prev {
   font-size: 13px;
   color: var(--ink);
 }
-.modal-field.inline input {
+.modal-field label.inline input[type="checkbox"] {
   width: 16px;
+  height: 16px;
   min-height: 16px;
   accent-color: var(--accent);
+  cursor: pointer;
 }
 
 .modal-foot {

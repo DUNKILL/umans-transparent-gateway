@@ -307,6 +307,37 @@ func (s *RuntimeStore) UpsertKey(in ManagedKey) (ManagedKey, error) {
 	return file.Keys[len(file.Keys)-1], nil
 }
 
+func (s *RuntimeStore) ResetKeyBackoff(id string) error {
+	if s == nil {
+		return ErrRuntimeStoreNotInitialized
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	found := false
+	for _, k := range s.keyFile.Keys {
+		if k.ID == id {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("key not found")
+	}
+	state := s.keyErrors[id]
+	if !state.BackoffUntil.IsZero() {
+		logger.Info("key backoff reset manually",
+			slog.String("keyID", id),
+			slog.Time("backoffUntil", state.BackoffUntil),
+		)
+	}
+	state.BackoffUntil = time.Time{}
+	state.WindowStart = time.Time{}
+	state.Count = 0
+	s.keyErrors[id] = state
+	s.signalLocked()
+	return nil
+}
+
 func (s *RuntimeStore) DeleteKey(id string) error {
 	s.mu.Lock()
 	file := cloneKeyFile(s.keyFile)

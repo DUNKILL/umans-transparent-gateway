@@ -173,6 +173,17 @@ func (s *Service) handleAdminKeyByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.Method {
+	case http.MethodPost:
+		if strings.HasSuffix(id, "/reset_backoff") {
+			resetID := strings.TrimSuffix(id, "/reset_backoff")
+			if err := s.store.ResetKeyBackoff(resetID); err != nil {
+				writeError(w, http.StatusBadRequest, "reset_backoff_failed", err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+			return
+		}
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 	case http.MethodPut:
 		var in ManagedKey
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
