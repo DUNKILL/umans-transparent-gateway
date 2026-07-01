@@ -1,0 +1,29 @@
+# Git / CI / caches
+.git
+.github
+.claude
+.gocache
+.gomodcache
+.npm-cache
+
+# Dependencies and build artifacts
+node_modules
+web/admin/node_modules
+gateway
+*.exe
+*.test
+
+# Runtime data (mounted as volumes, not needed in image)
+config
+error-events
+
+# Deployment templates (not needed in image, except entrypoint)
+deploy/systemd
+deploy/docker/Dockerfile
+deploy/docker/docker-compose.yml
+!deploy/docker/entrypoint.sh
+
+# Documentation / metadata
+README.md
+DEPLOYMENT.md
+LICENSE

@@ -1,4 +1,4 @@
-import { createIcons, KeyRound, LogOut, Plus, RefreshCw, Save, ShieldCheck, Trash2 } from 'lucide';
+import { createIcons, KeyRound, LogOut, Plus, RefreshCw, Save, Settings, ShieldCheck, Trash2 } from 'lucide';
 import './styles.css';
 
 type Config = {
@@ -280,6 +280,7 @@ let editingKey: KeyDraft | null = null;
 let message = '';
 let busy = false;
 let poller: number | undefined;
+let page: 'keys' | 'settings' = 'keys';
 
 function icon(name: string) {
   return `<i data-lucide="${name}" aria-hidden="true"></i>`;
@@ -373,7 +374,7 @@ function renderApp() {
       <header class="topbar">
         <div>
           <p class="eyebrow">UMANS TRANSPARENT GATEWAY</p>
-          <h1>运行配置与 Key 池</h1>
+          <h1>${page === 'keys' ? 'Key 管理' : '系统设置'}</h1>
         </div>
         <div class="topbar-actions">
           <span class="mode ${status.managedKeyMode ? 'on' : ''}">${status.managedKeyMode ? '托管 key 模式' : '客户端 key 透传'}</span>
@@ -382,30 +383,43 @@ function renderApp() {
         </div>
       </header>
       ${message ? `<div class="notice">${escapeHTML(message)}</div>` : ''}
-      <section class="metrics">
-        ${renderMetrics()}
-      </section>
-      <section class="workspace">
-        <form class="panel config-panel" id="config-form">
-          <div class="panel-head">
-            <h2>全局配置</h2>
-            <button class="primary" type="submit" ${busy ? 'disabled' : ''}>${icon('save')}保存配置</button>
-          </div>
-          ${renderConfigFields(status.config)}
-        </form>
-        <section class="panel keys-panel">
-          <div class="panel-head">
-            <h2>Key 管理</h2>
-            <button class="ghost" id="new-key">${icon('plus')}新增 key</button>
-          </div>
-          ${renderKeyForm()}
-          ${renderKeyTable(status.keys)}
-        </section>
-      </section>
+      <nav class="nav-tabs">
+        <button class="tab ${page === 'keys' ? 'active' : ''}" data-page="keys">${icon('key-round')}Key 管理</button>
+        <button class="tab ${page === 'settings' ? 'active' : ''}" data-page="settings">${icon('settings')}设置</button>
+      </nav>
+      ${page === 'keys' ? renderKeysPage() : renderSettingsPage()}
     </main>
   `;
   bindAppEvents();
   renderIcons();
+}
+
+function renderKeysPage() {
+  return `
+    <section class="panel keys-panel">
+      <div class="panel-head">
+        <h2>Key 池</h2>
+        <button class="ghost" id="new-key">${icon('plus')}新增 key</button>
+      </div>
+      ${renderKeyForm()}
+      ${renderKeyTable(status!.keys)}
+    </section>
+  `;
+}
+
+function renderSettingsPage() {
+  return `
+    <section class="metrics">
+      ${renderMetrics()}
+    </section>
+    <form class="panel config-panel" id="config-form">
+      <div class="panel-head">
+        <h2>全局配置</h2>
+        <button class="primary" type="submit" ${busy ? 'disabled' : ''}>${icon('save')}保存配置</button>
+      </div>
+      ${renderConfigFields(status!.config)}
+    </form>
+  `;
 }
 
 function renderLiveStatus() {
@@ -619,6 +633,17 @@ function bindAppEvents() {
   });
   document.querySelector<HTMLFormElement>('#config-form')?.addEventListener('submit', saveConfig);
   document.querySelector<HTMLFormElement>('#key-form')?.addEventListener('submit', saveKey);
+  document.querySelectorAll<HTMLButtonElement>('.tab').forEach((tab) => {
+    tab.addEventListener('click', () => {
+      const next = tab.dataset.page as 'keys' | 'settings';
+      if (next && next !== page) {
+        page = next;
+        message = '';
+        editingKey = null;
+        renderApp();
+      }
+    });
+  });
   document.querySelectorAll<HTMLButtonElement>('.edit-key').forEach((button) => {
     button.addEventListener('click', () => {
       const key = status?.keys.find((item) => item.id === button.dataset.id);
@@ -707,6 +732,7 @@ function renderIcons() {
       Plus,
       RefreshCw,
       Save,
+      Settings,
       ShieldCheck,
       Trash2,
     },

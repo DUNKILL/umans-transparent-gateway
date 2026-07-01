@@ -8,8 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -24,6 +27,19 @@ type Service struct {
 	limiter  *KeyLimiter
 }
 
+// defaultUpstreamTimeout is the hard ceiling for a single upstream HTTP
+// request. It prevents a stuck upstream from pinning a key lease forever.
+const defaultUpstreamTimeout = 5 * time.Minute
+
+func upstreamClientTimeout() time.Duration {
+	if v := os.Getenv("UMANS_UPSTREAM_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return defaultUpstreamTimeout
+}
+
 func New(cfg Config) (*Service, error) {
 	recorder, err := NewErrorRecorder(cfg)
 	if err != nil {
@@ -33,14 +49,20 @@ func New(cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	client := &http.Client{Timeout: 0}
-	return &Service{
+	client := &http.Client{Timeout: upstreamClientTimeout()}
+	svc := &Service{
 		cfg:      cfg,
 		client:   client,
 		recorder: recorder,
 		catalog:  NewCatalogService(client, recorder),
 		limiter:  limiter,
-	}, nil
+	}
+	logger.Info("gateway service initialized",
+		slog.String("listen", cfg.Listen),
+		slog.String("upstream", cfg.UpstreamBaseURL),
+		slog.Duration("upstreamTimeout", client.Timeout),
+	)
+	return svc, nil
 }
 
 func NewWithStore(store *RuntimeStore) (*Service, error) {
@@ -52,14 +74,20 @@ func NewWithStore(store *RuntimeStore) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	client := &http.Client{Timeout: 0}
-	return &Service{
+	client := &http.Client{Timeout: upstreamClientTimeout()}
+	svc := &Service{
 		cfg:      cfg,
 		store:    store,
 		client:   client,
 		recorder: recorder,
 		catalog:  NewCatalogService(client, recorder),
-	}, nil
+	}
+	logger.Info("gateway service initialized with runtime store",
+		slog.String("listen", cfg.Listen),
+		slog.String("upstream", cfg.UpstreamBaseURL),
+		slog.Duration("upstreamTimeout", client.Timeout),
+	)
+	return svc, nil
 }
 
 func (s *Service) currentConfig() Config {
@@ -357,6 +385,14 @@ func (s *Service) applySearchHeader(dst http.Header, inbound http.Header) {
 }
 
 func (s *Service) recordError(kind string, statusCode int, latency time.Duration, err error) {
+	if err != nil {
+		logger.Error("upstream/runtime error",
+			slog.String("event", kind),
+			slog.Int("status", statusCode),
+			slog.Duration("latency", latency),
+			slog.String("error", err.Error()),
+		)
+	}
 	if s.recorder != nil {
 		if s.store != nil {
 			_ = s.recorder.Configure(s.currentConfig())
@@ -381,15 +417,19 @@ func (s *Service) acquireKeySlot(ctx context.Context, key string) (func(), error
 func (s *Service) writeConcurrencyError(w http.ResponseWriter, start time.Time, err error) {
 	switch {
 	case errors.Is(err, ErrConcurrencyQueueTimeout), errors.Is(err, ErrManagedKeyQueueTimeout):
+		logger.Warn("concurrency queue timeout", slog.Duration("elapsed", time.Since(start)))
 		s.recordError("concurrency_queue_timeout", http.StatusTooManyRequests, time.Since(start), err)
 		writeError(w, http.StatusTooManyRequests, "concurrency_queue_timeout", "per-key concurrency queue timeout")
 	case errors.Is(err, ErrConcurrencyWaitCanceled), errors.Is(err, ErrManagedKeyWaitCanceled):
+		logger.Warn("concurrency wait canceled", slog.Duration("elapsed", time.Since(start)))
 		s.recordError("concurrency_wait_canceled", 499, time.Since(start), err)
 		writeError(w, http.StatusRequestTimeout, "concurrency_wait_canceled", "request canceled while waiting for concurrency slot")
 	case errors.Is(err, ErrNoManagedKeys):
+		logger.Error("no enabled managed keys available")
 		s.recordError("no_managed_keys", http.StatusServiceUnavailable, time.Since(start), err)
 		writeError(w, http.StatusServiceUnavailable, "no_managed_keys", "no enabled managed API keys")
 	default:
+		logger.Error("concurrency limiter error", slog.String("error", err.Error()))
 		s.recordError("concurrency_limiter_error", http.StatusInternalServerError, time.Since(start), err)
 		writeError(w, http.StatusInternalServerError, "concurrency_limiter_error", "failed to acquire concurrency slot")
 	}
@@ -534,6 +574,11 @@ type wsRequest struct {
 	Body     json.RawMessage   `json:"body"`
 }
 
+type wsCancelState struct {
+	mu      sync.Mutex
+	cancels map[string]context.CancelFunc
+}
+
 func (s *Service) handleWS(w http.ResponseWriter, r *http.Request) {
 	c, err := websocket.Accept(w, r, nil)
 	if err != nil {
@@ -541,7 +586,7 @@ func (s *Service) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer c.Close(websocket.StatusNormalClosure, "")
 	ctx := r.Context()
-	cancels := map[string]context.CancelFunc{}
+	state := &wsCancelState{cancels: map[string]context.CancelFunc{}}
 	for {
 		_, data, err := c.Read(ctx)
 		if err != nil {
@@ -553,9 +598,12 @@ func (s *Service) handleWS(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if req.Type == "cancel" {
-			if cancel := cancels[req.ID]; cancel != nil {
+			state.mu.Lock()
+			cancel := state.cancels[req.ID]
+			delete(state.cancels, req.ID)
+			state.mu.Unlock()
+			if cancel != nil {
 				cancel()
-				delete(cancels, req.ID)
 				writeWS(ctx, c, map[string]any{"type": "done", "id": req.ID, "cancelled": true})
 			}
 			continue
@@ -565,10 +613,16 @@ func (s *Service) handleWS(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		childCtx, cancel := context.WithCancel(ctx)
-		cancels[req.ID] = cancel
+		state.mu.Lock()
+		state.cancels[req.ID] = cancel
+		state.mu.Unlock()
 		go func(req wsRequest) {
-			defer delete(cancels, req.ID)
-			defer cancel()
+			defer func() {
+				state.mu.Lock()
+				delete(state.cancels, req.ID)
+				state.mu.Unlock()
+				cancel()
+			}()
 			s.runWSRequest(childCtx, c, r, req)
 		}(req)
 	}

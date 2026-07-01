@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"sort"
@@ -119,6 +120,10 @@ func NewRuntimeStore(dir string) (*RuntimeStore, error) {
 		return nil, err
 	}
 	go s.watch()
+	logger.Info("runtime store initialized",
+		slog.String("dir", dir),
+		slog.Int("managedKeys", len(s.keyFile.Keys)),
+	)
 	return s, nil
 }
 
@@ -363,6 +368,7 @@ func (s *RuntimeStore) AcquireManaged(ctx context.Context, sessionIdentity strin
 		keys := s.enabledKeysLocked()
 		if len(keys) == 0 {
 			s.mu.Unlock()
+			logger.Error("no managed keys available for request")
 			return nil, ErrNoManagedKeys
 		}
 		if cfg.StickySession && !stickyWaited {
@@ -373,10 +379,26 @@ func (s *RuntimeStore) AcquireManaged(ctx context.Context, sessionIdentity strin
 						s.mu.Unlock()
 						return lease, nil
 					}
-					// Sticky key is full or in backoff: don't wait for it, fall
-					// through to load balancing immediately.
-					stickyWaited = true
-					continue
+					if s.isKeyInBackoffLocked(k.ID, now) {
+						// Sticky key is in backoff: don't wait for it, fall through to
+						// load balancing immediately.
+						stickyWaited = true
+						s.mu.Unlock()
+						continue
+					}
+					// Sticky key is full: wait for the configured queue timeout before
+					// allowing a switch, preserving the original sticky behavior.
+					notify := s.notify
+					s.mu.Unlock()
+					switch waitForNotifyUntil(ctx, notify, deadline) {
+					case waitChanged:
+						continue
+					case waitTimedOut:
+						stickyWaited = true
+						continue
+					default:
+						return nil, ErrManagedKeyWaitCanceled
+					}
 				}
 			}
 		}
@@ -509,23 +531,34 @@ func (s *RuntimeStore) RecordKeyError(keyID string) {
 	defer s.mu.Unlock()
 	now := time.Now()
 	state := s.keyErrors[keyID]
-	if state.BackoffUntil.IsZero() {
-		state.BackoffUntil = now
+	// If the key is currently in backoff, ignore further errors: the key is
+	// already excluded from routing, and we don't want to extend the backoff
+	// on every failed probe while it is cooling down.
+	if now.Before(state.BackoffUntil) {
+		return
 	}
-	// Reset the error window if the previous backoff has expired and the
-	// counting window is stale.
-	if now.After(state.BackoffUntil) && now.After(state.WindowStart.Add(cfg.KeyErrorWindow)) {
+	// Start a fresh counting window if the previous one has gone stale.
+	if state.WindowStart.IsZero() || now.After(state.WindowStart.Add(cfg.KeyErrorWindow)) {
 		state.WindowStart = now
 		state.Count = 0
-	}
-	if state.WindowStart.IsZero() {
-		state.WindowStart = now
 	}
 	state.Count++
 	if state.Count >= cfg.KeyErrorThreshold {
 		state.BackoffUntil = now.Add(cfg.KeyErrorBackoff)
 		state.WindowStart = time.Time{}
 		state.Count = 0
+		logger.Warn("managed key entered error backoff",
+			slog.String("keyID", keyID),
+			slog.Int("errorCount", cfg.KeyErrorThreshold),
+			slog.Duration("backoff", cfg.KeyErrorBackoff),
+			slog.Time("backoffUntil", state.BackoffUntil),
+		)
+	} else {
+		logger.Warn("managed key recorded error",
+			slog.String("keyID", keyID),
+			slog.Int("count", state.Count),
+			slog.Int("threshold", cfg.KeyErrorThreshold),
+		)
 	}
 	s.keyErrors[keyID] = state
 	// Wake up waiters so that requests previously blocked on this key can

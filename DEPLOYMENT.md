@@ -82,7 +82,20 @@ docker compose -f deploy/docker/docker-compose.yml up -d --build
 curl http://127.0.0.1:8080/healthz
 ```
 
-Docker Compose 会把本地 `config/` 挂载到容器的 `/var/lib/umans-gateway/config`。
+Docker Compose 会把本地 `config/` 挂载到容器的 `/data/config`，`error-events` 则使用命名卷持久化。
+
+默认入口脚本以 root 启动，自动把 `/data` 目录属主改为 `PUID/PGID` 指定的用户，然后降权运行网关。这样绑定挂载的本地目录无需提前改成容器镜像的 UID 也能被程序读写。如果你的宿主机用户不是 `1000:1000`，在 `deploy/docker/docker-compose.yml` 中修改 `PUID`/`PGID` 即可。
+
+可用的环境变量示例：
+
+| 变量 | 说明 | 默认值 |
+|---|---|---|
+| `PUID` | 运行时用户 UID | `1000` |
+| `PGID` | 运行时用户 GID | `1000` |
+| `UMANS_LOG_LEVEL` | 控制台日志级别（`DEBUG`/`INFO`/`WARN`/`ERROR`） | `INFO` |
+| `UMANS_UPSTREAM_TIMEOUT` | 单个上游请求硬超时 | `5m` |
+| `UMANS_CONFIG_DIR` | 配置文件目录 | `/data/config` |
+| `UMANS_ERROR_EVENT_DIR` | 错误事件 JSONL 目录 | `/data/error-events` |
 
 ## Claude Code / ccswitch
 
