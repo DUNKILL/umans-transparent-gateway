@@ -12,10 +12,11 @@ import (
 )
 
 type ErrorRecorder struct {
-	dir     string
-	maxAge  time.Duration
-	maxSize int64
-	mu      sync.Mutex
+	dir        string
+	maxAge     time.Duration
+	maxSize    int64
+	logMessage bool
+	mu         sync.Mutex
 }
 
 func NewErrorRecorder(cfg Config) (*ErrorRecorder, error) {
@@ -23,9 +24,10 @@ func NewErrorRecorder(cfg Config) (*ErrorRecorder, error) {
 		return nil, err
 	}
 	return &ErrorRecorder{
-		dir:     cfg.ErrorEventDir,
-		maxAge:  cfg.ErrorEventMaxAge,
-		maxSize: cfg.ErrorEventMaxSize,
+		dir:        cfg.ErrorEventDir,
+		maxAge:     cfg.ErrorEventMaxAge,
+		maxSize:    cfg.ErrorEventMaxSize,
+		logMessage: cfg.LogErrorMessage,
 	}, nil
 }
 
@@ -37,13 +39,20 @@ func (l *ErrorRecorder) Record(kind string, statusCode int, latency time.Duratio
 	defer l.mu.Unlock()
 	l.cleanupLocked(time.Now())
 	now := time.Now()
-	line, marshalErr := json.Marshal(map[string]any{
+	event := map[string]any{
 		"ts":             now.Format(time.RFC3339Nano),
 		"event":          normalizeEventKind(kind),
 		"status_class":   statusClass(statusCode),
 		"latency_bucket": latencyBucket(latency),
 		"error_class":    classifyError(err),
-	})
+	}
+	// When LogErrorMessage is enabled, store the raw err.Error() so the admin
+	// UI can show the actual failure reason (upstream URL, cause, etc.). This
+	// is opt-in because it may contain upstream base URLs and request paths.
+	if l.logMessage {
+		event["message"] = err.Error()
+	}
+	line, marshalErr := json.Marshal(event)
 	if marshalErr != nil {
 		return
 	}
@@ -68,6 +77,7 @@ func (l *ErrorRecorder) Configure(cfg Config) error {
 	l.dir = cfg.ErrorEventDir
 	l.maxAge = cfg.ErrorEventMaxAge
 	l.maxSize = cfg.ErrorEventMaxSize
+	l.logMessage = cfg.LogErrorMessage
 	return nil
 }
 

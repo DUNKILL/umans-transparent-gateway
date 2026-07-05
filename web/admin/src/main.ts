@@ -90,6 +90,7 @@ type LogEvent = {
   status_class: string;
   latency_bucket: string;
   error_class: string;
+  message?: string;
 };
 
 type LogDayResponse = {
@@ -300,6 +301,13 @@ const configFields: ConfigField[] = [
     section: 'logs',
     description: '错误事件目录允许保留的最大字节数，超过后优先删除最旧的 JSONL 文件。',
   },
+  {
+    key: 'logErrorMessage',
+    label: '记录错误详情',
+    type: 'checkbox',
+    section: 'logs',
+    description: '开启后错误事件 JSONL 每条多记一个 message 字段，原样保存 err.Error()（含上游 URL、原因等），可在系统日志页点击行查看。默认关闭以保持匿名。',
+  },
 ];
 
 const sectionNames: Record<ConfigField['section'], string> = {
@@ -328,10 +336,12 @@ let page: 'keys' | 'settings' | 'logs' = 'keys';
 // Log page state. logDays is the day index; selectedLogDay is the currently
 // chosen YYYYMMDD (empty = none selected); logEvents is the event list for the
 // selected day; logsBusy tracks the in-flight fetch for the day detail.
+// expandedLogIdx is the index of the row whose message detail is expanded.
 let logDays: LogDaySummary[] = [];
 let selectedLogDay: string = '';
 let logEvents: LogEvent[] = [];
 let logsBusy = false;
+let expandedLogIdx: number = -1;
 
 type ThemeMode = 'light' | 'dark' | 'system';
 let themeMode: ThemeMode = (localStorage.getItem('umans-theme') as ThemeMode) || 'system';
@@ -502,7 +512,7 @@ function renderApp() {
             <button data-theme="dark" title="深色" class="${themeMode === 'dark' ? 'active' : ''}">${icon('moon')}</button>
           </div>
           <button class="logout" id="logout">${icon('log-out')} 退出登录</button>
-          <span class="build">Version: 1.1</span>
+          <span class="build">Version: 1.2</span>
         </div>
       </aside>
       <section class="main">
@@ -600,10 +610,7 @@ function renderLogsPage() {
       <div class="panel-head">
         <div>
           <h3>错误事件日志</h3>
-          <p class="ph-sub">按天浏览匿名化的上游/运行时错误事件，仅记录类型与分类，不含请求体或密钥</p>
-        </div>
-        <div class="ph-actions">
-          <button class="outline" id="refresh-logs">${icon('refresh-cw')}刷新</button>
+          <p class="ph-sub">按天浏览错误事件。开启"记录错误详情"后可点击行查看完整错误信息</p>
         </div>
       </div>
       <div class="logs-layout">
@@ -649,6 +656,9 @@ function renderLogDays() {
 }
 
 function renderLogEvents() {
+  if (logsBusy) {
+    return `<div class="empty-state">加载中…</div>`;
+  }
   if (!selectedLogDay) {
     return `
       <div class="empty-state">
@@ -656,9 +666,6 @@ function renderLogEvents() {
         从左侧选择一个日期查看当天的事件。
       </div>
     `;
-  }
-  if (logsBusy) {
-    return `<div class="empty-state">加载中…</div>`;
   }
   if (!logEvents.length) {
     return `
@@ -686,16 +693,28 @@ function renderLogEvents() {
         </thead>
         <tbody>
           ${logEvents
-            .map((ev) => {
+            .map((ev, i) => {
               const sev = logEventSeverity(ev);
+              const expanded = i === expandedLogIdx;
+              const hasMsg = !!ev.message;
               return `
-            <tr>
+            <tr class="log-row ${expanded ? 'expanded' : ''} ${hasMsg ? 'clickable' : ''}" data-log-idx="${i}">
               <td class="log-ts">${formatLogTs(ev.ts)}</td>
               <td><span class="log-event">${escapeHTML(ev.event)}</span></td>
               <td><span class="pill ${sev.cls}"><span class="dot"></span>${escapeHTML(ev.status_class || 'none')}</span></td>
               <td class="log-lat">${escapeHTML(ev.latency_bucket || 'unknown')}</td>
-              <td class="log-cls">${escapeHTML(ev.error_class || 'other')}</td>
+              <td class="log-cls">${escapeHTML(ev.error_class || 'other')}${hasMsg ? ` <span class="log-expand-hint">${expanded ? '收起' : '详情'}</span>` : ''}</td>
             </tr>
+            ${expanded && hasMsg ? `
+              <tr class="log-detail-row">
+                <td colspan="5">
+                  <div class="log-detail">
+                    <span class="log-detail-label">错误详情</span>
+                    <pre class="log-detail-msg">${escapeHTML(ev.message || '')}</pre>
+                  </div>
+                </td>
+              </tr>
+            ` : ''}
           `;
             })
             .join('')}
@@ -739,11 +758,15 @@ function pad2(n: number): string {
 }
 
 async function refreshLogDays() {
+  logsBusy = true;
+  renderApp();
   try {
     const res = await api<{ days: LogDaySummary[] }>('/admin/api/logs');
     logDays = res.days || [];
   } catch (error) {
     setMessage(humanError(error), 'error');
+  } finally {
+    logsBusy = false;
     renderApp();
   }
 }
@@ -751,6 +774,7 @@ async function refreshLogDays() {
 async function selectLogDay(date: string) {
   selectedLogDay = date;
   logEvents = [];
+  expandedLogIdx = -1;
   logsBusy = true;
   renderApp();
   try {
@@ -1045,7 +1069,16 @@ function bindAppEvents() {
   document.querySelector('#refresh')?.addEventListener('click', async () => {
     await refreshStatus();
     setMessage('');
-    renderApp();
+    // On the logs page, also reload the day index and the currently selected
+    // day's events so the global refresh is the single source of truth.
+    if (page === 'logs') {
+      await refreshLogDays();
+      if (selectedLogDay) {
+        await selectLogDay(selectedLogDay);
+      }
+    } else {
+      renderApp();
+    }
   });
   document.querySelector('#logout')?.addEventListener('click', async () => {
     await api('/admin/api/logout', { method: 'POST' }).catch(() => undefined);
@@ -1110,17 +1143,19 @@ function bindAppEvents() {
     });
   });
   // logs page events
-  document.querySelector('#refresh-logs')?.addEventListener('click', () => {
-    refreshLogDays().then(() => {
-      if (selectedLogDay) {
-        selectLogDay(selectedLogDay);
-      }
-    });
-  });
   document.querySelectorAll<HTMLButtonElement>('.day-item').forEach((button) => {
     button.addEventListener('click', () => {
       const date = button.dataset.date || '';
       if (date) selectLogDay(date);
+    });
+  });
+  document.querySelectorAll<HTMLTableRowElement>('.log-row').forEach((row) => {
+    row.addEventListener('click', () => {
+      const idx = Number(row.dataset.logIdx);
+      if (Number.isNaN(idx)) return;
+      // toggle expansion; only rows with a message field are meaningful
+      expandedLogIdx = expandedLogIdx === idx ? -1 : idx;
+      renderApp();
     });
   });
   // modal interactions

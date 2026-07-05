@@ -52,6 +52,7 @@ type Config struct {
 	KeyErrorThreshold int
 	KeyErrorWindow    time.Duration
 	KeyErrorBackoff   time.Duration
+	LogErrorMessage   bool
 }
 
 func DefaultConfig() Config {
@@ -82,6 +83,7 @@ func DefaultConfig() Config {
 		KeyErrorThreshold: 3,
 		KeyErrorWindow:    60 * time.Second,
 		KeyErrorBackoff:   30 * time.Second,
+		LogErrorMessage:   false,
 	}
 }
 
@@ -113,6 +115,7 @@ func ConfigFromEnv() Config {
 	cfg.KeyErrorThreshold = envNonNegativeInt("UMANS_KEY_ERROR_THRESHOLD", cfg.KeyErrorThreshold)
 	cfg.KeyErrorWindow = envDuration("UMANS_KEY_ERROR_WINDOW", cfg.KeyErrorWindow)
 	cfg.KeyErrorBackoff = envDuration("UMANS_KEY_ERROR_BACKOFF", cfg.KeyErrorBackoff)
+	cfg.LogErrorMessage = envBool("UMANS_LOG_ERROR_MESSAGE", cfg.LogErrorMessage)
 	return cfg
 }
 

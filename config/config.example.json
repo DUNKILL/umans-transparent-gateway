@@ -21,5 +21,6 @@
   "adminPassword": "change-me",
   "proxyAccessToken": "",
   "stickySession": true,
-  "stickySessionTTL": "10s"
+  "stickySessionTTL": "10s",
+  "logErrorMessage": false
 }

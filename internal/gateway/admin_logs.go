@@ -34,6 +34,7 @@ type logEvent struct {
 	StatusClass   string `json:"status_class"`
 	LatencyBucket string `json:"latency_bucket"`
 	ErrorClass    string `json:"error_class"`
+	Message       string `json:"message,omitempty"`
 }
 
 type logDayResponse struct {

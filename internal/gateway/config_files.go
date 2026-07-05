@@ -41,6 +41,7 @@ type ConfigFile struct {
 	KeyErrorThreshold      int    `json:"keyErrorThreshold"`
 	KeyErrorWindow         string `json:"keyErrorWindow"`
 	KeyErrorBackoff        string `json:"keyErrorBackoff"`
+	LogErrorMessage        bool   `json:"logErrorMessage"`
 }
 
 type ManagedKey struct {
@@ -173,6 +174,7 @@ func ConfigToFile(cfg Config) ConfigFile {
 		KeyErrorThreshold:      cfg.KeyErrorThreshold,
 		KeyErrorWindow:         cfg.KeyErrorWindow.String(),
 		KeyErrorBackoff:        cfg.KeyErrorBackoff.String(),
+		LogErrorMessage:        cfg.LogErrorMessage,
 	}
 }
 
@@ -256,6 +258,7 @@ func (f ConfigFile) ToConfig() (Config, error) {
 		}
 		cfg.KeyErrorBackoff = d
 	}
+	cfg.LogErrorMessage = f.LogErrorMessage
 	return cfg, nil
 }
 
