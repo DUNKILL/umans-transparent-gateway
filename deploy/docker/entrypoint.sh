@@ -6,6 +6,13 @@ set -e
 PUID=${PUID:-1000}
 PGID=${PGID:-1000}
 
+# Honor the TZ environment variable by pointing /etc/localtime at the matching
+# zoneinfo file. Go reads TZ directly, but this also makes /bin/date and any
+# other tools in the container report local time consistently.
+if [ -n "$TZ" ] && [ -f "/usr/share/zoneinfo/$TZ" ]; then
+	cp -f "/usr/share/zoneinfo/$TZ" /etc/localtime
+fi
+
 # If running as root, ensure the data directories are owned by the runtime user
 # and then drop privileges. This makes bind-mounted host volumes writable
 # without forcing the host owner to match the image's build-time UID.

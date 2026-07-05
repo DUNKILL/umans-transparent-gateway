@@ -102,13 +102,13 @@ func TestRecordKeyErrorNilErrCounts(t *testing.T) {
 // TestIsClientCancellation covers the classifier directly.
 func TestIsClientCancellation(t *testing.T) {
 	cases := map[error]bool{
-		nil:                                 false,
-		context.Canceled:                    true,
+		nil:                                      false,
+		context.Canceled:                         true,
 		fmt.Errorf("wrap: %w", context.Canceled): true,
-		errors.New("upstream_status_503"):   false,
+		errors.New("upstream_status_503"):        false,
 		errors.New("write tcp 127.0.0.1:54321->443: broken pipe"): true,
 		errors.New("read: connection reset by peer"):              true,
-		errors.New("client disconnected"):                          true,
+		errors.New("client disconnected"):                         true,
 		errors.New("deadline exceeded"):                           false,
 	}
 	for err, want := range cases {

@@ -36,8 +36,9 @@ func (l *ErrorRecorder) Record(kind string, statusCode int, latency time.Duratio
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.cleanupLocked(time.Now())
+	now := time.Now()
 	line, marshalErr := json.Marshal(map[string]any{
-		"ts":             time.Now().UTC().Format(time.RFC3339Nano),
+		"ts":             now.Format(time.RFC3339Nano),
 		"event":          normalizeEventKind(kind),
 		"status_class":   statusClass(statusCode),
 		"latency_bucket": latencyBucket(latency),
@@ -46,7 +47,7 @@ func (l *ErrorRecorder) Record(kind string, statusCode int, latency time.Duratio
 	if marshalErr != nil {
 		return
 	}
-	path := filepath.Join(l.dir, time.Now().UTC().Format("20060102-15")+".jsonl")
+	path := filepath.Join(l.dir, now.Format("20060102-15")+".jsonl")
 	f, openErr := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if openErr != nil {
 		return

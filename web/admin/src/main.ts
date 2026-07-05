@@ -3,6 +3,8 @@ import {
   Activity,
   AlertTriangle,
   CheckCircle2,
+  Clock,
+  FileText,
   KeyRound,
   LayoutGrid,
   LogOut,
@@ -72,6 +74,28 @@ type StatusResponse = {
   config: Config;
   keys: KeyStatus[];
   managedKeyMode: boolean;
+};
+
+type LogDaySummary = {
+  date: string;
+  hours: number;
+  count: number;
+  firstEvent: string;
+  lastEvent: string;
+};
+
+type LogEvent = {
+  ts: string;
+  event: string;
+  status_class: string;
+  latency_bucket: string;
+  error_class: string;
+};
+
+type LogDayResponse = {
+  date: string;
+  count: number;
+  events: LogEvent[];
 };
 
 type ConfigField = {
@@ -299,7 +323,15 @@ let editingKey: KeyDraft | null = null;
 let message: { text: string; kind: 'success' | 'error' | 'info' } = { text: '', kind: 'info' };
 let busy = false;
 let poller: number | undefined;
-let page: 'keys' | 'settings' = 'keys';
+let page: 'keys' | 'settings' | 'logs' = 'keys';
+
+// Log page state. logDays is the day index; selectedLogDay is the currently
+// chosen YYYYMMDD (empty = none selected); logEvents is the event list for the
+// selected day; logsBusy tracks the in-flight fetch for the day detail.
+let logDays: LogDaySummary[] = [];
+let selectedLogDay: string = '';
+let logEvents: LogEvent[] = [];
+let logsBusy = false;
 
 type ThemeMode = 'light' | 'dark' | 'system';
 let themeMode: ThemeMode = (localStorage.getItem('umans-theme') as ThemeMode) || 'system';
@@ -458,6 +490,9 @@ function renderApp() {
           <button class="nav-item ${page === 'settings' ? 'active' : ''}" data-page="settings">
             ${icon('layout-grid')} 系统设置
           </button>
+          <button class="nav-item ${page === 'logs' ? 'active' : ''}" data-page="logs">
+            ${icon('file-text')} 系统日志
+          </button>
         </nav>
         ${renderRailStats()}
         <div class="rail-foot">
@@ -473,8 +508,8 @@ function renderApp() {
       <section class="main">
         <header class="topbar">
           <div class="page-title">
-            <p class="eyebrow">${page === 'keys' ? 'KEY POOL' : 'SYSTEM CONFIG'}</p>
-            <h2>${page === 'keys' ? 'Key 管理' : '系统设置'}</h2>
+            <p class="eyebrow">${page === 'keys' ? 'KEY POOL' : page === 'settings' ? 'SYSTEM CONFIG' : 'ERROR EVENTS'}</p>
+            <h2>${page === 'keys' ? 'Key 管理' : page === 'settings' ? '系统设置' : '系统日志'}</h2>
           </div>
           <div class="topbar-actions">
             <span class="mode-pill ${status.managedKeyMode ? 'on' : ''}">
@@ -486,7 +521,7 @@ function renderApp() {
         </header>
         <div class="content">
           ${message.text ? renderNotice() : ''}
-          ${page === 'keys' ? renderKeysPage() : renderSettingsPage()}
+          ${page === 'keys' ? renderKeysPage() : page === 'settings' ? renderSettingsPage() : renderLogsPage()}
         </div>
       </section>
     </main>
@@ -555,6 +590,178 @@ function renderSettingsPage() {
       </div>
     </form>
   `;
+}
+
+/* ─────────────────────────  LOGS PAGE  ───────────────────────── */
+
+function renderLogsPage() {
+  return `
+    <section class="panel logs-panel">
+      <div class="panel-head">
+        <div>
+          <h3>错误事件日志</h3>
+          <p class="ph-sub">按天浏览匿名化的上游/运行时错误事件，仅记录类型与分类，不含请求体或密钥</p>
+        </div>
+        <div class="ph-actions">
+          <button class="outline" id="refresh-logs">${icon('refresh-cw')}刷新</button>
+        </div>
+      </div>
+      <div class="logs-layout">
+        <aside class="logs-days">
+          ${renderLogDays()}
+        </aside>
+        <div class="logs-events">
+          ${renderLogEvents()}
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderLogDays() {
+  if (!logDays.length) {
+    return `
+      <div class="empty-state">
+        <div class="es-icon">${icon('file-text')}</div>
+        暂无错误事件记录。
+      </div>
+    `;
+  }
+  return `
+    <ul class="day-list">
+      ${logDays
+        .map((d) => {
+          const active = d.date === selectedLogDay;
+          return `
+          <li>
+            <button class="day-item ${active ? 'active' : ''}" data-date="${escapeAttr(d.date)}">
+              <span class="day-date">${formatLogDate(d.date)}</span>
+              <span class="day-meta">
+                <span class="day-count">${d.count}</span> 事件 · ${d.hours} 个小时文件
+              </span>
+            </button>
+          </li>
+        `;
+        })
+        .join('')}
+    </ul>
+  `;
+}
+
+function renderLogEvents() {
+  if (!selectedLogDay) {
+    return `
+      <div class="empty-state">
+        <div class="es-icon">${icon('file-text')}</div>
+        从左侧选择一个日期查看当天的事件。
+      </div>
+    `;
+  }
+  if (logsBusy) {
+    return `<div class="empty-state">加载中…</div>`;
+  }
+  if (!logEvents.length) {
+    return `
+      <div class="empty-state">
+        <div class="es-icon">${icon('file-text')}</div>
+        ${escapeHTML(selectedLogDay)} 当天无事件记录。
+      </div>
+    `;
+  }
+  return `
+    <div class="logs-head">
+      <span class="logs-date">${formatLogDate(selectedLogDay)}</span>
+      <span class="logs-total">共 ${logEvents.length} 条事件</span>
+    </div>
+    <div class="table-wrap">
+      <table class="logs-table">
+        <thead>
+          <tr>
+            <th>时间</th>
+            <th>事件</th>
+            <th>状态</th>
+            <th>延迟</th>
+            <th>分类</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${logEvents
+            .map((ev) => {
+              const sev = logEventSeverity(ev);
+              return `
+            <tr>
+              <td class="log-ts">${formatLogTs(ev.ts)}</td>
+              <td><span class="log-event">${escapeHTML(ev.event)}</span></td>
+              <td><span class="pill ${sev.cls}"><span class="dot"></span>${escapeHTML(ev.status_class || 'none')}</span></td>
+              <td class="log-lat">${escapeHTML(ev.latency_bucket || 'unknown')}</td>
+              <td class="log-cls">${escapeHTML(ev.error_class || 'other')}</td>
+            </tr>
+          `;
+            })
+            .join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+// logEventSeverity maps an event's status class to a pill style. 5xx and 4xx
+// get danger/warn treatments; everything else stays neutral.
+function logEventSeverity(ev: LogEvent): { cls: string } {
+  const s = ev.status_class || '';
+  if (s === '5xx') return { cls: 'danger' };
+  if (s === '4xx') return { cls: 'warn' };
+  if (s === '2xx') return { cls: 'enabled' };
+  return { cls: '' };
+}
+
+// formatLogDate turns a YYYYMMDD string into a localized, readable date. It
+// parses in the local timezone so the weekday matches the user's view.
+function formatLogDate(date: string): string {
+  const y = Number(date.slice(0, 4));
+  const m = Number(date.slice(4, 6));
+  const d = Number(date.slice(6, 8));
+  if (!y || !m || !d) return date;
+  const dt = new Date(y, m - 1, d);
+  const weekday = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][dt.getDay()];
+  return `${y}-${pad2(m)}-${pad2(d)} ${weekday}`;
+}
+
+// formatLogTs renders an RFC3339Nano timestamp as HH:MM:SS in local time.
+function formatLogTs(ts: string): string {
+  const t = new Date(ts);
+  if (isNaN(t.getTime())) return ts;
+  return `${pad2(t.getHours())}:${pad2(t.getMinutes())}:${pad2(t.getSeconds())}`;
+}
+
+function pad2(n: number): string {
+  return n < 10 ? '0' + n : String(n);
+}
+
+async function refreshLogDays() {
+  try {
+    const res = await api<{ days: LogDaySummary[] }>('/admin/api/logs');
+    logDays = res.days || [];
+  } catch (error) {
+    setMessage(humanError(error), 'error');
+    renderApp();
+  }
+}
+
+async function selectLogDay(date: string) {
+  selectedLogDay = date;
+  logEvents = [];
+  logsBusy = true;
+  renderApp();
+  try {
+    const res = await api<LogDayResponse>(`/admin/api/logs/${encodeURIComponent(date)}`);
+    logEvents = res.events || [];
+  } catch (error) {
+    setMessage(humanError(error), 'error');
+  } finally {
+    logsBusy = false;
+    renderApp();
+  }
 }
 
 function renderTelemetry() {
@@ -853,13 +1060,16 @@ function bindAppEvents() {
   document.querySelector<HTMLFormElement>('#key-form')?.addEventListener('submit', saveKey);
   document.querySelectorAll<HTMLButtonElement>('.nav-item').forEach((tab) => {
     tab.addEventListener('click', () => {
-      const next = tab.dataset.page as 'keys' | 'settings';
+      const next = tab.dataset.page as 'keys' | 'settings' | 'logs';
       if (next && next !== page) {
         page = next;
         setMessage('');
         editingKey = null;
         modal = { kind: 'none' };
         renderApp();
+        if (next === 'logs') {
+          refreshLogDays();
+        }
       }
     });
   });
@@ -897,6 +1107,20 @@ function bindAppEvents() {
         setMessage(humanError(error), 'error');
         renderApp();
       }
+    });
+  });
+  // logs page events
+  document.querySelector('#refresh-logs')?.addEventListener('click', () => {
+    refreshLogDays().then(() => {
+      if (selectedLogDay) {
+        selectLogDay(selectedLogDay);
+      }
+    });
+  });
+  document.querySelectorAll<HTMLButtonElement>('.day-item').forEach((button) => {
+    button.addEventListener('click', () => {
+      const date = button.dataset.date || '';
+      if (date) selectLogDay(date);
     });
   });
   // modal interactions
@@ -998,6 +1222,8 @@ function renderIcons() {
       Activity,
       AlertTriangle,
       CheckCircle2,
+      Clock,
+      FileText,
       KeyRound,
       LayoutGrid,
       LogOut,

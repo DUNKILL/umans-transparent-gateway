@@ -180,3 +180,57 @@ func TestNormalizeRequestJSONStillConvertsDeeplyNestedTupleSchema(t *testing.T) 
 		t.Fatalf("additionalItems should be removed")
 	}
 }
+
+// TestNormalizeSamplingParams fixes top_k values that the upstream rejects.
+// Upstream requires top_k == -1 (disabled) or >= 1; a 0 (commonly sent by some
+// clients to mean "unset") produces a 400. The gateway rewrites such values to
+// -1 so the request goes through as "disabled".
+func TestNormalizeSamplingParams(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want any
+	}{
+		{"zero becomes -1", `{"model":"m","top_k":0}`, float64(-1)},
+		{"float zero becomes -1", `{"model":"m","top_k":0.0}`, float64(-1)},
+		{"negative non-minus-one becomes -1", `{"model":"m","top_k":-2}`, float64(-1)},
+		{"minus-one preserved", `{"model":"m","top_k":-1}`, float64(-1)},
+		{"positive preserved", `{"model":"m","top_k":40}`, float64(40)},
+		{"one preserved", `{"model":"m","top_k":1}`, float64(1)},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			out := normalizeRequestJSON([]byte(c.in), false)
+			var payload map[string]any
+			if err := json.Unmarshal(out, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if got := payload["top_k"]; got != c.want {
+				t.Fatalf("top_k=%v want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestNormalizeSamplingParamsDoesNotTouchOtherFields ensures the top_k fix is
+// surgical and does not alter other sampling fields or drop top_k entirely.
+func TestNormalizeSamplingParamsDoesNotTouchOtherFields(t *testing.T) {
+	in := []byte(`{"model":"m","top_k":0,"top_p":0.9,"temperature":0.5,"max_tokens":1024}`)
+	out := normalizeRequestJSON(in, false)
+	var payload map[string]any
+	if err := json.Unmarshal(out, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if got := payload["top_k"]; got != float64(-1) {
+		t.Fatalf("top_k=%v want -1", got)
+	}
+	if got := payload["top_p"]; got != 0.9 {
+		t.Fatalf("top_p changed: %v", got)
+	}
+	if got := payload["temperature"]; got != 0.5 {
+		t.Fatalf("temperature changed: %v", got)
+	}
+	if got := payload["max_tokens"]; got != float64(1024) {
+		t.Fatalf("max_tokens changed: %v", got)
+	}
+}

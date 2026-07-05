@@ -96,6 +96,7 @@ Docker Compose 会把本地 `config/` 挂载到容器的 `/data/config`，`error
 | `UMANS_UPSTREAM_TIMEOUT` | 单个上游请求硬超时 | `5m` |
 | `UMANS_CONFIG_DIR` | 配置文件目录 | `/data/config` |
 | `UMANS_ERROR_EVENT_DIR` | 错误事件 JSONL 目录 | `/data/error-events` |
+| `TZ` | 容器本地时区。错误事件按本地小时分桶（文件名 `YYYYMMDD-HH`），管理页面的系统日志按此时区按天展示 | `Asia/Shanghai` |
 
 ## Claude Code / ccswitch
 

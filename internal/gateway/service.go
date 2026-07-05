@@ -106,6 +106,8 @@ func (s *Service) Routes() http.Handler {
 	mux.HandleFunc("/admin/api/config", s.handleAdminConfig)
 	mux.HandleFunc("/admin/api/keys", s.handleAdminKeys)
 	mux.HandleFunc("/admin/api/keys/", s.handleAdminKeyByID)
+	mux.HandleFunc("/admin/api/logs", s.handleAdminLogs)
+	mux.HandleFunc("/admin/api/logs/", s.handleAdminLogsByDay)
 	mux.HandleFunc("/admin/api/status", s.handleAdminStatus)
 	mux.HandleFunc("/admin", s.handleAdminStatic)
 	mux.HandleFunc("/admin/", s.handleAdminStatic)

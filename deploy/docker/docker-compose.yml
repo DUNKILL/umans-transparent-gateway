@@ -13,6 +13,10 @@ services:
       PUID: 1000
       PGID: 1000
       UMANS_LOG_LEVEL: INFO
+      # Container local time. Error-event files are bucketed by local hour, so
+      # this controls which YYYYMMDD-HH.jsonl file an event lands in. Override
+      # if you need a different timezone.
+      TZ: Asia/Shanghai
     volumes:
       - ../../config:/data/config
       - umans-error-events:/data/error-events

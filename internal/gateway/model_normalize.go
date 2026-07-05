@@ -32,6 +32,9 @@ func normalizeRequestJSON(body []byte, schemaCompat bool) []byte {
 	if schemaCompat {
 		changed = normalizeJSONSchemaDraft(&payload)
 	}
+	if normalizeSamplingParams(&payload) {
+		changed = true
+	}
 	model, ok := payload["model"].(string)
 	if ok {
 		normalized := normalizeModelName(model)
@@ -48,6 +51,49 @@ func normalizeRequestJSON(body []byte, schemaCompat bool) []byte {
 		return body
 	}
 	return next
+}
+
+// normalizeSamplingParams fixes sampling parameters that some clients send
+// with values the upstream rejects. Currently handled:
+//   - top_k: upstream requires -1 (disabled) or >= 1. A 0 (or any value < 1
+//     that is not -1) is rewritten to -1 so the request is accepted.
+//
+// We intentionally keep the rule conservative: only the documented invalid
+// case is normalized. Values >= 1 are forwarded untouched.
+func normalizeSamplingParams(payload *map[string]any) bool {
+	if payload == nil || *payload == nil {
+		return false
+	}
+	v, ok := (*payload)["top_k"]
+	if !ok {
+		return false
+	}
+	n, ok := toFloat(v)
+	if !ok {
+		return false
+	}
+	// -1 is the upstream "disabled" sentinel and is forwarded as-is. Any other
+	// value below 1 (0 being the common offender) is invalid upstream; rewrite
+	// to -1 rather than dropping the field, so behavior matches "disabled".
+	if n == -1 || n >= 1 {
+		return false
+	}
+	(*payload)["top_k"] = -1
+	return true
+}
+
+// toFloat reports whether v is a JSON number (int or float64) and returns it
+// as a float64. Booleans and strings are not treated as numbers here.
+func toFloat(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	}
+	return 0, false
 }
 
 func normalizeJSONSchemaDraft(v any) bool {
