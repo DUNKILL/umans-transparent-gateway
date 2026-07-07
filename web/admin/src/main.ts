@@ -512,7 +512,7 @@ function renderApp() {
             <button data-theme="dark" title="深色" class="${themeMode === 'dark' ? 'active' : ''}">${icon('moon')}</button>
           </div>
           <button class="logout" id="logout">${icon('log-out')} 退出登录</button>
-          <span class="build">Version: 1.2</span>
+          <span class="build">Version: 1.2.1</span>
         </div>
       </aside>
       <section class="main">
@@ -656,72 +656,87 @@ function renderLogDays() {
 }
 
 function renderLogEvents() {
+  // The container is updated in place by renderLogEventsInto when toggling a
+  // row's expansion, so the element keeps a stable id for partial re-render.
   if (logsBusy) {
-    return `<div class="empty-state">加载中…</div>`;
+    return `<div class="logs-events" id="logs-events"><div class="empty-state">加载中…</div></div>`;
   }
   if (!selectedLogDay) {
     return `
-      <div class="empty-state">
-        <div class="es-icon">${icon('file-text')}</div>
-        从左侧选择一个日期查看当天的事件。
+      <div class="logs-events" id="logs-events">
+        <div class="empty-state">
+          <div class="es-icon">${icon('file-text')}</div>
+          从左侧选择一个日期查看当天的事件。
+        </div>
       </div>
     `;
   }
   if (!logEvents.length) {
     return `
-      <div class="empty-state">
-        <div class="es-icon">${icon('file-text')}</div>
-        ${escapeHTML(selectedLogDay)} 当天无事件记录。
+      <div class="logs-events" id="logs-events">
+        <div class="empty-state">
+          <div class="es-icon">${icon('file-text')}</div>
+          ${escapeHTML(selectedLogDay)} 当天无事件记录。
+        </div>
       </div>
     `;
   }
   return `
-    <div class="logs-head">
-      <span class="logs-date">${formatLogDate(selectedLogDay)}</span>
-      <span class="logs-total">共 ${logEvents.length} 条事件</span>
-    </div>
-    <div class="table-wrap">
-      <table class="logs-table">
-        <thead>
-          <tr>
-            <th>时间</th>
-            <th>事件</th>
-            <th>状态</th>
-            <th>延迟</th>
-            <th>分类</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${logEvents
-            .map((ev, i) => {
-              const sev = logEventSeverity(ev);
-              const expanded = i === expandedLogIdx;
-              const hasMsg = !!ev.message;
-              return `
-            <tr class="log-row ${expanded ? 'expanded' : ''} ${hasMsg ? 'clickable' : ''}" data-log-idx="${i}">
-              <td class="log-ts">${formatLogTs(ev.ts)}</td>
-              <td><span class="log-event">${escapeHTML(ev.event)}</span></td>
-              <td><span class="pill ${sev.cls}"><span class="dot"></span>${escapeHTML(ev.status_class || 'none')}</span></td>
-              <td class="log-lat">${escapeHTML(ev.latency_bucket || 'unknown')}</td>
-              <td class="log-cls">${escapeHTML(ev.error_class || 'other')}${hasMsg ? ` <span class="log-expand-hint">${expanded ? '收起' : '详情'}</span>` : ''}</td>
+    <div class="logs-events" id="logs-events">
+      <div class="logs-head">
+        <span class="logs-date">${formatLogDate(selectedLogDay)}</span>
+        <span class="logs-total">共 ${logEvents.length} 条事件</span>
+      </div>
+      <div class="table-wrap">
+        <table class="logs-table">
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>事件</th>
+              <th>状态</th>
+              <th>延迟</th>
+              <th>分类</th>
             </tr>
-            ${expanded && hasMsg ? `
-              <tr class="log-detail-row">
-                <td colspan="5">
-                  <div class="log-detail">
-                    <span class="log-detail-label">错误详情</span>
-                    <pre class="log-detail-msg">${escapeHTML(ev.message || '')}</pre>
-                  </div>
-                </td>
-              </tr>
-            ` : ''}
-          `;
-            })
-            .join('')}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            ${renderLogEventsBody()}
+          </tbody>
+        </table>
+      </div>
     </div>
   `;
+}
+
+// renderLogEventsBody returns the inner HTML of the events table tbody. It is
+// isolated so toggling a row's expansion can update just this fragment without
+// re-rendering the whole app (which would reset scroll position).
+function renderLogEventsBody() {
+  return logEvents
+    .map((ev, i) => {
+      const sev = logEventSeverity(ev);
+      const expanded = i === expandedLogIdx;
+      const hasMsg = !!ev.message;
+      return `
+        <tr class="log-row ${expanded ? 'expanded' : ''} ${hasMsg ? 'clickable' : ''}" data-log-idx="${i}">
+          <td class="log-ts">${formatLogTs(ev.ts)}</td>
+          <td><span class="log-event">${escapeHTML(ev.event)}</span></td>
+          <td><span class="pill ${sev.cls}"><span class="dot"></span>${escapeHTML(ev.status_class || 'none')}</span></td>
+          <td class="log-lat">${escapeHTML(ev.latency_bucket || 'unknown')}</td>
+          <td class="log-cls">${escapeHTML(ev.error_class || 'other')}${hasMsg ? ` <span class="log-expand-hint">${expanded ? '收起' : '详情'}</span>` : ''}</td>
+        </tr>
+        ${expanded && hasMsg ? `
+          <tr class="log-detail-row">
+            <td colspan="5">
+              <div class="log-detail">
+                <span class="log-detail-label">错误详情</span>
+                <pre class="log-detail-msg">${escapeHTML(ev.message || '')}</pre>
+              </div>
+            </td>
+          </tr>
+        ` : ''}
+      `;
+    })
+    .join('');
 }
 
 // logEventSeverity maps an event's status class to a pill style. 5xx and 4xx
@@ -1149,15 +1164,7 @@ function bindAppEvents() {
       if (date) selectLogDay(date);
     });
   });
-  document.querySelectorAll<HTMLTableRowElement>('.log-row').forEach((row) => {
-    row.addEventListener('click', () => {
-      const idx = Number(row.dataset.logIdx);
-      if (Number.isNaN(idx)) return;
-      // toggle expansion; only rows with a message field are meaningful
-      expandedLogIdx = expandedLogIdx === idx ? -1 : idx;
-      renderApp();
-    });
-  });
+  bindLogRowEvents();
   // modal interactions
   document.querySelector('#modal-cancel')?.addEventListener('click', closeModal);
   document.querySelector('#overlay')?.addEventListener('click', (event) => {
@@ -1169,6 +1176,29 @@ function bindAppEvents() {
   } else {
     document.removeEventListener('keydown', onModalKeydown);
   }
+}
+
+// bindLogRowEvents attaches click handlers to log table rows. It is called
+// both from bindAppEvents (initial render) and after a partial re-render of
+// the events container (so newly created rows are clickable). Toggling a row
+// updates only #logs-events instead of the whole app, preserving scroll
+// position.
+function bindLogRowEvents() {
+  document.querySelectorAll<HTMLTableRowElement>('.log-row').forEach((row) => {
+    row.addEventListener('click', () => {
+      const idx = Number(row.dataset.logIdx);
+      if (Number.isNaN(idx)) return;
+      expandedLogIdx = expandedLogIdx === idx ? -1 : idx;
+      const container = document.querySelector('#logs-events');
+      if (container) {
+        container.innerHTML = renderLogEvents();
+        bindLogRowEvents();
+        renderIcons();
+      } else {
+        renderApp();
+      }
+    });
+  });
 }
 
 function onModalKeydown(event: KeyboardEvent) {
