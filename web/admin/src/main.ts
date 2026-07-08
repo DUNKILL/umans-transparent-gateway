@@ -512,7 +512,7 @@ function renderApp() {
             <button data-theme="dark" title="深色" class="${themeMode === 'dark' ? 'active' : ''}">${icon('moon')}</button>
           </div>
           <button class="logout" id="logout">${icon('log-out')} 退出登录</button>
-          <span class="build">Version: 1.2.1</span>
+          <span class="build">Version: 1.2.2</span>
         </div>
       </aside>
       <section class="main">
@@ -656,8 +656,9 @@ function renderLogDays() {
 }
 
 function renderLogEvents() {
-  // The container is updated in place by renderLogEventsInto when toggling a
-  // row's expansion, so the element keeps a stable id for partial re-render.
+  // The scroll container (.logs-events) is stable across row toggles: clicking
+  // a row only rewrites the <tbody> via renderLogEventsBody, so scroll
+  // position is preserved. See bindLogRowEvents.
   if (logsBusy) {
     return `<div class="logs-events" id="logs-events"><div class="empty-state">加载中…</div></div>`;
   }
@@ -1180,18 +1181,20 @@ function bindAppEvents() {
 
 // bindLogRowEvents attaches click handlers to log table rows. It is called
 // both from bindAppEvents (initial render) and after a partial re-render of
-// the events container (so newly created rows are clickable). Toggling a row
-// updates only #logs-events instead of the whole app, preserving scroll
-// position.
+// the table body (so newly created rows are clickable). Toggling a row only
+// rewrites the <tbody> innerHTML, leaving the scroll container (.logs-events)
+// untouched so the scroll position is preserved.
 function bindLogRowEvents() {
   document.querySelectorAll<HTMLTableRowElement>('.log-row').forEach((row) => {
     row.addEventListener('click', () => {
       const idx = Number(row.dataset.logIdx);
       if (Number.isNaN(idx)) return;
       expandedLogIdx = expandedLogIdx === idx ? -1 : idx;
-      const container = document.querySelector('#logs-events');
-      if (container) {
-        container.innerHTML = renderLogEvents();
+      // Update only the tbody. Replacing the scroll container's innerHTML
+      // would reset its scrollTop, so we target the tbody specifically.
+      const tbody = document.querySelector('#logs-events tbody');
+      if (tbody) {
+        tbody.innerHTML = renderLogEventsBody();
         bindLogRowEvents();
         renderIcons();
       } else {
